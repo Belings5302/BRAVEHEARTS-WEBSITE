@@ -5,7 +5,7 @@ const { db, hashPassword } = require('../db');
 const { validate, schemas } = require('../middleware/validation');
 const { adminAuthMiddleware } = require('../middleware/admin-auth');
 const { authRateLimiter } = require('../middleware/security');
-const { asyncHandler } = require('../middleware/errorHandler');
+const { asyncHandler, logger } = require('../middleware/errorHandler');
 const { triggerUpdate } = require('../utils');
 const { parseCsv, parseSpreadsheet, toInt } = require('../services/csv-import');
 
@@ -33,7 +33,10 @@ router.post('/login', authRateLimiter, validate(schemas.login), asyncHandler(asy
   const passwordHash = hashPassword(password);
 
   db.get('SELECT id, email, name, role FROM admins WHERE email = ? AND password_hash = ?', [email, passwordHash], (err, admin) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) {
+      logger.error('Admin login lookup failed', { message: err.message, code: err.code });
+      return res.status(500).json({ error: `Admin login database error: ${err.message}` });
+    }
     if (!admin) {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
@@ -44,7 +47,10 @@ router.post('/login', authRateLimiter, validate(schemas.login), asyncHandler(asy
       'INSERT INTO admin_sessions (session_id, admin_id, admin_email, admin_role, created_at) VALUES (?, ?, ?, ?, ?)',
       [sessionId, admin.id, admin.email, admin.role, now],
       (insertErr) => {
-        if (insertErr) return res.status(500).json({ error: 'Failed to create session.' });
+        if (insertErr) {
+          logger.error('Admin session creation failed', { message: insertErr.message, code: insertErr.code });
+          return res.status(500).json({ error: `Failed to create session: ${insertErr.message}` });
+        }
         res.json({ sessionId, admin: { id: admin.id, email: admin.email, name: admin.name, role: admin.role } });
       }
     );
