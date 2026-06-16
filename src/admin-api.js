@@ -1,7 +1,10 @@
 const ADMIN_API_BASE = import.meta?.env?.VITE_ADMIN_API_BASE_URL || '/api/admin';
 
 async function handleResponse(response) {
-  const data = await response.json().catch(() => ({}));
+  const contentType = response.headers.get('content-type') || '';
+  const data = contentType.includes('application/json')
+    ? await response.json().catch(() => ({}))
+    : { error: await response.text().catch(() => '') };
   if (!response.ok) {
     const validationDetails = Array.isArray(data.errors)
       ? `: ${data.errors.slice(0, 6).map(detail => `Row ${detail.row || '?'} ${detail.field || 'field'} - ${detail.message || ''}`.trim()).join('; ')}`
@@ -9,7 +12,8 @@ async function handleResponse(response) {
     const details = Array.isArray(data.details)
       ? `: ${data.details.map(detail => `${detail.field || 'field'} ${detail.message || ''}`.trim()).join(', ')}`
       : validationDetails;
-    throw new Error(`${data.error || 'An unexpected error occurred.'}${details}`);
+    const message = data.error || data.message || `Request failed with status ${response.status}`;
+    throw new Error(`${message}${details}`);
   }
   return data;
 }
