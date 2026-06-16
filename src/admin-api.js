@@ -1,4 +1,4 @@
-const ADMIN_API_BASE = 'http://localhost:3000/api/admin';
+const ADMIN_API_BASE = import.meta?.env?.VITE_ADMIN_API_BASE_URL || '/api/admin';
 
 async function handleResponse(response) {
   const data = await response.json().catch(() => ({}));
