@@ -92,6 +92,7 @@ app.get('/api/updates', (req, res) => {
 
 // Mount route modules
 app.use('/api/auth', authRoutes);
+app.use('/api/users', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/games', gameRoutes);

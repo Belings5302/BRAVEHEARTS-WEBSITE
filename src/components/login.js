@@ -1,86 +1,198 @@
 // Login & Account Component
 
-export function renderLogin(user, mode = 'login', subscriptionPaid = false, orders = [], resetMode = false, resetError = null) {
+function formatDate(value) {
+  if (!value) return '—';
+  return new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatStatus(status) {
+  return String(status || 'pending').replace(/_/g, ' ');
+}
+
+function getOrderStatusStyle(status) {
+  if (status === 'paid') return { bg: 'rgba(46, 213, 115, 0.15)', color: '#2ed573' };
+  if (status === 'shipped') return { bg: 'rgba(30, 144, 255, 0.15)', color: '#1e90ff' };
+  if (status === 'cancelled') return { bg: 'rgba(255, 71, 87, 0.15)', color: '#ff4757' };
+  return { bg: 'rgba(255, 165, 0, 0.15)', color: '#ffa500' };
+}
+
+export function renderLogin(user, mode = 'login', subscriptionPaid = false, orders = [], resetMode = false, resetError = null, profile = null, selectedOrder = null, players = []) {
   if (user) {
-    const ordersHTML = orders.length === 0
+    const recentOrders = orders.slice(0, 5);
+    const paidOrders = orders.filter(order => order.status === 'paid');
+    const totalSpent = paidOrders.reduce((sum, order) => sum + Number(order.total_mwk || 0), 0);
+    const latestOrder = orders[0];
+    const displayName = String(profile?.name || '').trim() || 'Member';
+    const profilePhotoUrl = profile?.profile_photo_url || '';
+    const favoriteTeam = profile?.favorite_team || '';
+    const favoritePlayer = profile?.favorite_player || '';
+    const teamPlayers = favoriteTeam ? players.filter(player => player.team === favoriteTeam) : [];
+    const membershipExpiresAt = profile?.membership_expires_at || null;
+    const subscriptionLabel = subscriptionPaid ? 'Active Member' : 'Payment Pending';
+    const subscriptionTone = subscriptionPaid
+      ? { bg: 'rgba(46, 213, 115, 0.15)', color: '#2ed573' }
+      : { bg: 'rgba(255, 71, 87, 0.15)', color: '#ff4757' };
+
+    const ordersHTML = recentOrders.length === 0
       ? `
-        <p style="color: var(--color-text-muted); font-size: 0.95rem; text-align: center; padding: 30px 0;">You have not placed any shop orders yet.</p>
+        <div class="account-empty-state">
+          <i data-lucide="shopping-bag"></i>
+          <p>No recent orders yet.</p>
+          <a class="btn btn-secondary btn-sm" href="#/fanzone">Visit Fan Zone</a>
+        </div>
       `
       : `
-        <div style="overflow-x: auto;">
-          <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.95rem; color: var(--color-text-secondary);">
-            <thead>
-              <tr style="border-bottom: 2px solid var(--border-glass); color: var(--color-text-muted); font-weight: 600;">
-                <th style="padding: 12px 10px;">Order Ref</th>
-                <th style="padding: 12px 10px;">Date</th>
-                <th style="padding: 12px 10px;">Amount (MWK)</th>
-                <th style="padding: 12px 10px; text-align: center;">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${orders.map(o => {
-                let statusBg = 'rgba(255, 165, 0, 0.15)';
-                let statusColor = '#ffa500';
-                if (o.status === 'paid') {
-                  statusBg = 'rgba(46, 213, 115, 0.15)';
-                  statusColor = '#2ed573';
-                } else if (o.status === 'shipped') {
-                  statusBg = 'rgba(30, 144, 255, 0.15)';
-                  statusColor = '#1e90ff';
-                } else if (o.status === 'cancelled') {
-                  statusBg = 'rgba(255, 71, 87, 0.15)';
-                  statusColor = '#ff4757';
-                }
-                return `
-                  <tr style="border-bottom: 1px solid rgba(255,255,255,0.03);">
-                    <td style="padding: 14px 10px; font-weight: 700; color: #fff;">${o.reference}</td>
-                    <td style="padding: 14px 10px;">${new Date(o.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</td>
-                    <td style="padding: 14px 10px; font-weight: 600;">MWK ${o.total_mwk.toLocaleString()}</td>
-                    <td style="padding: 14px 10px; text-align: center;">
-                      <span style="display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; background: ${statusBg}; color: ${statusColor};">
-                        ${o.status}
-                      </span>
-                    </td>
-                  </tr>
-                `;
-              }).join('')}
-            </tbody>
-          </table>
+        <div class="account-orders-list">
+          ${recentOrders.map(order => {
+            const statusStyle = getOrderStatusStyle(order.status);
+            return `
+              <article class="account-order-item" data-account-order-id="${order.id}">
+                <div>
+                  <strong>${order.reference}</strong>
+                  <span>${formatDate(order.created_at)} • ${order.payment_method || 'Payment'}</span>
+                </div>
+                <div class="account-order-side">
+                  <strong>MWK ${Number(order.total_mwk || 0).toLocaleString()}</strong>
+                  <span style="background:${statusStyle.bg};color:${statusStyle.color};">${formatStatus(order.status)}</span>
+                </div>
+              </article>
+            `;
+          }).join('')}
         </div>
       `;
 
     return `
       <section class="login-sec" id="login">
         <div class="section-container">
-          <div class="section-header" style="margin-bottom: 40px; text-align: center;">
+          <div class="section-header account-header">
             <span class="section-tagline">Member Access</span>
-            <h2 class="section-title text-gradient-green">Account Dashboard</h2>
-            <p class="section-desc" style="max-width: 600px; margin: 0 auto;">Manage your profile, pay your annual subscription, and view your purchase history.</p>
+            <h2 class="section-title text-gradient-green">My Account</h2>
+            <p class="section-desc">Manage your profile, membership, orders, and account security.</p>
           </div>
 
-          <div class="account-dashboard-grid" style="display: grid; grid-template-columns: 1fr; gap: 30px; max-width: 1100px; margin: 0 auto;">
-            <!-- Welcome Card -->
-            <div class="login-card glass" style="padding: 24px; border-radius: 16px; border: 1px solid var(--border-glass); height: fit-content; text-align: left; max-width: 100%;">
-              <h3 style="margin-top:0; font-family: var(--font-headings); font-size: 1.4rem; color: #fff; margin-bottom: 20px;">Profile Info</h3>
-              <p style="font-size: 0.95rem; margin-bottom: 16px; color: var(--color-text-secondary);">Signed in as: <strong style="color: #fff;">${user}</strong></p>
-              
-              <div class="subscription-summary" style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-glass); padding: 16px; border-radius: 8px; margin-bottom: 24px;">
-                <p style="margin: 0 0 10px; font-size: 0.9rem; color: var(--color-text-muted); font-weight: 600;">Annual Membership Status:</p>
-                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
-                  <span style="display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 0.85rem; font-weight: 700; text-transform: uppercase; background: ${subscriptionPaid ? 'rgba(46, 213, 115, 0.15)' : 'rgba(255, 71, 87, 0.15)'}; color: ${subscriptionPaid ? '#2ed573' : '#ff4757'};">
-                    ${subscriptionPaid ? 'Active Member' : 'Payment Pending'}
-                  </span>
-                  ${subscriptionPaid ? '' : `<button class="btn btn-secondary btn-sm" type="button" data-pay-subscription="true">Pay Fee (MWK 15,000)</button>`}
+          <div class="account-dashboard-grid">
+            <article class="account-card account-profile-card glass">
+              <div class="account-card-title-row">
+                <div>
+                  <span class="account-kicker">Profile summary</span>
+                  <h3>Welcome back, ${displayName}</h3>
+                </div>
+                <div class="account-avatar">${profilePhotoUrl ? `<img src="${profilePhotoUrl}" alt="${displayName}">` : `<i data-lucide="user"></i>`}</div>
+              </div>
+              <div class="account-profile-email">${displayName}<span>${user}</span></div>
+              <form class="account-profile-form" data-account-profile-form="true">
+                <input class="login-input" name="name" value="${displayName}" placeholder="Full name" />
+                <input class="login-input" type="hidden" name="profile_photo_url" value="${profilePhotoUrl}" />
+                <input class="login-input" type="file" name="profile_photo_file" accept="image/*,.jpg,.jpeg,.png,.gif,.webp,.svg,.bmp,.avif,.ico" />
+                <div class="account-form-row">
+                  <select class="login-input" name="favorite_team" data-favorite-team-select="true">
+                    <option value="" ${!favoriteTeam ? 'selected' : ''}>Choose favourite team</option>
+                    <option value="men" ${favoriteTeam === 'men' ? 'selected' : ''}>BH Men</option>
+                    <option value="ladies" ${favoriteTeam === 'ladies' ? 'selected' : ''}>BH Ladies</option>
+                    <option value="boys" ${favoriteTeam === 'boys' ? 'selected' : ''}>BH Boys</option>
+                    <option value="girls" ${favoriteTeam === 'girls' ? 'selected' : ''}>BH Girls</option>
+                  </select>
+                  <select class="login-input" name="favorite_player" ${favoriteTeam ? '' : 'disabled'} data-favorite-player-select="true">
+                    <option value="" ${!favoritePlayer ? 'selected' : ''}>${favoriteTeam ? 'Choose favourite player' : 'Select team first'}</option>
+                    ${teamPlayers.map(player => `<option value="${player.name}" ${favoritePlayer === player.name ? 'selected' : ''}>${player.name}</option>`).join('')}
+                  </select>
+                </div>
+                <button class="btn btn-secondary btn-sm" type="submit">Save Profile</button>
+              </form>
+              <div class="account-mini-stats">
+                <div>
+                  <span>Orders</span>
+                  <strong>${orders.length}</strong>
+                </div>
+                <div>
+                  <span>Paid total</span>
+                  <strong>MWK ${totalSpent.toLocaleString()}</strong>
+                </div>
+                <div>
+                  <span>Latest order</span>
+                  <strong>${latestOrder ? formatDate(latestOrder.created_at) : '—'}</strong>
                 </div>
               </div>
-              <button class="btn btn-primary" data-logout="true" style="width: 100%;">Logout</button>
-            </div>
+            </article>
 
-            <!-- Order History Card -->
-            <div class="login-card glass" style="padding: 24px; border-radius: 16px; border: 1px solid var(--border-glass); text-align: left; max-width: 100%;">
-              <h3 style="margin-top:0; font-family: var(--font-headings); font-size: 1.4rem; border-left: 4px solid var(--color-accent); padding-left: 12px; color: #fff; margin-bottom: 20px;">Your Orders</h3>
+            <article class="account-card glass">
+              <div class="account-card-title-row">
+                <div>
+                  <span class="account-kicker">Membership</span>
+                  <h3>Subscription status</h3>
+                </div>
+                <span class="account-status-pill" style="background:${subscriptionTone.bg};color:${subscriptionTone.color};">${subscriptionLabel}</span>
+              </div>
+              <p class="account-card-copy">
+                ${subscriptionPaid
+                  ? 'Your annual Bravehearts membership is active. Thank you for supporting the club.'
+                  : 'Complete your annual subscription to activate member benefits and support the club.'}
+              </p>
+              <div class="account-expiry"><span>Expiry date</span><strong>${membershipExpiresAt ? formatDate(membershipExpiresAt) : 'Not active yet'}</strong></div>
+              ${subscriptionPaid ? `
+                <a class="btn btn-secondary btn-sm account-card-action" href="#/fanzone">View Fan Zone</a>
+              ` : `
+                <button class="btn btn-secondary btn-sm account-card-action" type="button" data-pay-subscription="true">Pay Fee (MWK 15,000)</button>
+              `}
+            </article>
+
+            <article class="account-card account-orders-card glass">
+              <div class="account-card-title-row">
+                <div>
+                  <span class="account-kicker">Purchase history</span>
+                  <h3>Recent orders</h3>
+                </div>
+                <span class="account-count-pill">${recentOrders.length} shown</span>
+              </div>
               ${ordersHTML}
-            </div>
+              ${selectedOrder ? `
+                <div class="account-order-detail">
+                  <div class="account-card-title-row">
+                    <div>
+                      <span class="account-kicker">Order detail</span>
+                      <h3>${selectedOrder.reference}</h3>
+                    </div>
+                    <button class="btn btn-secondary btn-sm" type="button" data-close-order-detail="true">Close</button>
+                  </div>
+                  ${(selectedOrder.items || []).map(item => `
+                    <div class="account-detail-item">
+                      <span>${item.title}</span>
+                      <strong>${item.quantity} × MWK ${Number(item.unit_price_mwk || 0).toLocaleString()}</strong>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
+            </article>
+
+            <article class="account-card glass">
+              <div class="account-card-title-row">
+                <div>
+                  <span class="account-kicker">Preferences</span>
+                  <h3>Notifications</h3>
+                </div>
+                <i data-lucide="bell" class="account-title-icon"></i>
+              </div>
+              <form class="account-preferences-form" data-account-preferences-form="true">
+                ${[['notify_game_reminders','Game reminders'], ['notify_live_scores','Live scores'], ['notify_news','News updates'], ['notify_merch','Merch promotions']].map(([key,label]) => `
+                  <label><input type="checkbox" name="${key}" ${profile?.[key] !== false ? 'checked' : ''}> ${label}</label>
+                `).join('')}
+                <button class="btn btn-secondary btn-sm" type="submit">Save Preferences</button>
+              </form>
+            </article>
+
+            <article class="account-card glass">
+              <div class="account-card-title-row">
+                <div>
+                  <span class="account-kicker">Security</span>
+                  <h3>Account actions</h3>
+                </div>
+                <i data-lucide="shield-check" class="account-title-icon"></i>
+              </div>
+              <div class="account-actions-stack">
+                <button class="btn btn-secondary" type="button" data-account-change-password="true">Change Password</button>
+                <button class="btn btn-primary" type="button" data-logout="true">Logout</button>
+              </div>
+            </article>
           </div>
         </div>
       </section>

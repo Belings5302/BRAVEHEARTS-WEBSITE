@@ -118,6 +118,34 @@ export async function fetchUserOrders(userId) {
   return handleResponse(response);
 }
 
+export async function fetchUserOrderDetail(userId, orderId) {
+  const response = await fetch(`${API_BASE}/users/${userId}/orders/${orderId}`);
+  return handleResponse(response);
+}
+
+export async function fetchUserProfile(userId) {
+  const response = await fetch(`${API_BASE}/users/${userId}/profile`);
+  return handleResponse(response);
+}
+
+export async function updateUserProfile(userId, profile) {
+  const response = await fetch(`${API_BASE}/users/${userId}/profile`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(profile)
+  });
+  return handleResponse(response);
+}
+
+export async function uploadUserProfilePhoto(userId, fileName, fileData) {
+  const response = await fetch(`${API_BASE}/users/${userId}/profile-photo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileName, fileData })
+  });
+  return handleResponse(response);
+}
+
 export async function forgotPassword(email) {
   const response = await fetch(`${API_BASE}/auth/forgot-password`, {
     method: 'POST',

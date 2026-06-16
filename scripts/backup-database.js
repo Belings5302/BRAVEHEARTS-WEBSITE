@@ -1,41 +1,38 @@
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
 const BACKUP_DIR = path.join(__dirname, '../backups');
-const DB_PATH = process.env.DB_PATH || './data/database.sqlite';
+const DATABASE_URL = process.env.DATABASE_URL;
+const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+const backupPath = path.join(BACKUP_DIR, `postgres-backup-${timestamp}.sql`);
 
-// Ensure backup directory exists
+if (!DATABASE_URL) {
+  console.error('DATABASE_URL is required to create a PostgreSQL backup.');
+  process.exit(1);
+}
+
 if (!fs.existsSync(BACKUP_DIR)) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
 }
 
-function createBackup() {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupFileName = `database-backup-${timestamp}.sqlite`;
-  const backupPath = path.join(BACKUP_DIR, backupFileName);
+try {
+  execFileSync('pg_dump', [DATABASE_URL, '--file', backupPath, '--format=plain', '--no-owner'], {
+    stdio: 'inherit'
+  });
+  console.log(`PostgreSQL backup created: ${path.basename(backupPath)}`);
 
-  if (fs.existsSync(DB_PATH)) {
-    fs.copyFileSync(DB_PATH, backupPath);
-    console.log(`Database backup created: ${backupFileName}`);
-    
-    // Keep only last 7 backups
-    const backups = fs.readdirSync(BACKUP_DIR)
-      .filter(file => file.startsWith('database-backup-') && file.endsWith('.sqlite'))
-      .sort()
-      .reverse();
-    
-    if (backups.length > 7) {
-      const oldBackups = backups.slice(7);
-      oldBackups.forEach(oldBackup => {
-        fs.unlinkSync(path.join(BACKUP_DIR, oldBackup));
-        console.log(`Deleted old backup: ${oldBackup}`);
-      });
-    }
-  } else {
-    console.log('Database file not found, skipping backup');
+  const backups = fs.readdirSync(BACKUP_DIR)
+    .filter(file => file.startsWith('postgres-backup-') && file.endsWith('.sql'))
+    .sort()
+    .reverse();
+
+  for (const oldBackup of backups.slice(7)) {
+    fs.unlinkSync(path.join(BACKUP_DIR, oldBackup));
+    console.log(`Deleted old backup: ${oldBackup}`);
   }
+} catch (error) {
+  console.error('PostgreSQL backup failed. Make sure pg_dump is installed and DATABASE_URL is valid.');
+  process.exit(error.status || 1);
 }
-
-// Run backup
-createBackup();

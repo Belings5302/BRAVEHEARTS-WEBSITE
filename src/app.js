@@ -28,6 +28,10 @@ import {
   voteOnPoll,
   fetchNotifications,
   fetchUserOrders,
+  fetchUserOrderDetail,
+  fetchUserProfile,
+  updateUserProfile,
+  uploadUserProfilePhoto,
   forgotPassword,
   resetPassword,
   getExchangeRate
@@ -332,6 +336,9 @@ const state = {
   productSearch: '',
   newsSearch: '',
   gamesSearch: '',
+  userProfile: null,
+  selectedAccountOrder: null,
+  accountPlayers: [],
   resultFilters: safeParseStoredJson('bh_result_filters', { team: 'all', competition: 'all' }),
   scheduleStatusFilter: 'all'
 };
@@ -1056,13 +1063,19 @@ async function loadLoginPage() {
   try {
     let orders = [];
     if (state.userId) {
-      const response = await fetchUserOrders(state.userId);
-      orders = response.orders || [];
+      const [ordersResponse, profileResponse, playersResponse] = await Promise.all([
+        fetchUserOrders(state.userId),
+        fetchUserProfile(state.userId),
+        fetchPlayers()
+      ]);
+      orders = ordersResponse.orders || [];
+      state.userProfile = profileResponse.profile || null;
+      state.accountPlayers = playersResponse.players || [];
     }
-    mainContent.innerHTML = renderLogin(state.user, state.authMode, state.subscriptionPaid, orders, resetMode, resetError);
+    mainContent.innerHTML = renderLogin(state.user, state.authMode, state.subscriptionPaid, orders, resetMode, resetError, state.userProfile, state.selectedAccountOrder, state.accountPlayers);
     if (window.lucide) window.lucide.createIcons();
   } catch (err) {
-    mainContent.innerHTML = renderLogin(state.user, state.authMode, state.subscriptionPaid, [], resetMode, resetError);
+    mainContent.innerHTML = renderLogin(state.user, state.authMode, state.subscriptionPaid, [], resetMode, resetError, state.userProfile, state.selectedAccountOrder, state.accountPlayers);
     if (window.lucide) window.lucide.createIcons();
   }
 }
@@ -1495,7 +1508,7 @@ function setupEventListeners() {
   window.addEventListener('scroll', handleScrollPosition);
   window.addEventListener('hashchange', renderActivePage);
 
-  document.addEventListener('click', (e) => {
+  document.addEventListener('click', async (e) => {
     // Theme toggle
     const themeBtn = e.target.closest('#theme-toggle-btn');
     if (themeBtn) {
@@ -1570,6 +1583,18 @@ function setupEventListeners() {
       return;
     }
 
+    const favoriteTeamSelect = e.target.closest('[data-favorite-team-select]');
+    if (favoriteTeamSelect && state.userProfile) {
+      state.userProfile = {
+        ...state.userProfile,
+        favorite_team: favoriteTeamSelect.value,
+        favorite_player: ''
+      };
+      state.selectedAccountOrder = null;
+      await loadLoginPage();
+      return;
+    }
+
     // Auth toggle
     const modeBtn = e.target.closest('[data-auth-mode]');
     if (modeBtn) {
@@ -1594,6 +1619,38 @@ function setupEventListeners() {
     const confirmPayBtn = e.target.closest('[data-confirm-mobile-payment]');
     if (confirmPayBtn) {
       confirmMobileMoneyPayment();
+      return;
+    }
+
+    const accountOrder = e.target.closest('[data-account-order-id]');
+    if (accountOrder && state.userId) {
+      try {
+        const response = await fetchUserOrderDetail(state.userId, accountOrder.dataset.accountOrderId);
+        state.selectedAccountOrder = response.order;
+        await loadLoginPage();
+      } catch (error) {
+        notify(error.message, 'Order details unavailable', 'error');
+      }
+      return;
+    }
+
+    const closeOrderDetail = e.target.closest('[data-close-order-detail]');
+    if (closeOrderDetail) {
+      state.selectedAccountOrder = null;
+      await loadLoginPage();
+      return;
+    }
+
+    const changePasswordBtn = e.target.closest('[data-account-change-password]');
+    if (changePasswordBtn) {
+      state.user = null;
+      state.userId = null;
+      state.subscriptionPaid = false;
+      state.authMode = 'forgot';
+      localStorage.removeItem('bh_user');
+      localStorage.removeItem('bh_user_id');
+      localStorage.removeItem('bh_subscription_paid');
+      renderActivePage();
       return;
     }
 
@@ -1639,6 +1696,71 @@ function setupEventListeners() {
   }, 350));
 
   document.addEventListener('submit', async (e) => {
+    const profileForm = e.target.closest('[data-account-profile-form]');
+    if (profileForm) {
+      e.preventDefault();
+      if (!state.userId) return;
+      const formData = new FormData(profileForm);
+      const selectedTeam = String(formData.get('favorite_team') || '').trim();
+      const selectedPlayer = String(formData.get('favorite_player') || '').trim();
+      const allowedPlayers = state.accountPlayers.filter(player => player.team === selectedTeam).map(player => player.name);
+      if (selectedTeam && selectedPlayer && !allowedPlayers.includes(selectedPlayer)) {
+        notify('Choose a player from the selected team roster.', 'Invalid favourite player', 'warning');
+        return;
+      }
+      try {
+        let profilePhotoUrl = String(formData.get('profile_photo_url') || '').trim();
+        const photoFile = profileForm.querySelector('[name="profile_photo_file"]')?.files?.[0];
+        if (photoFile) {
+          if (!photoFile.type.startsWith('image/')) {
+            notify('Please select a valid image file.', 'Invalid image', 'warning');
+            return;
+          }
+          const fileData = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Could not read selected image.'));
+            reader.readAsDataURL(photoFile);
+          });
+          const upload = await uploadUserProfilePhoto(state.userId, photoFile.name, fileData);
+          profilePhotoUrl = upload.imageUrl || upload.url;
+        }
+        await updateUserProfile(state.userId, {
+          name: String(formData.get('name') || '').trim(),
+          profile_photo_url: profilePhotoUrl,
+          favorite_team: selectedTeam,
+          favorite_player: selectedTeam ? selectedPlayer : ''
+        });
+        state.userProfile = null;
+        await loadLoginPage();
+        notify('Profile updated successfully.', 'Profile saved', 'success');
+      } catch (error) {
+        notify(error.message, 'Profile update failed', 'error');
+      }
+      return;
+    }
+
+    const preferencesForm = e.target.closest('[data-account-preferences-form]');
+    if (preferencesForm) {
+      e.preventDefault();
+      if (!state.userId) return;
+      const formData = new FormData(preferencesForm);
+      try {
+        await updateUserProfile(state.userId, {
+          notify_game_reminders: formData.has('notify_game_reminders'),
+          notify_live_scores: formData.has('notify_live_scores'),
+          notify_news: formData.has('notify_news'),
+          notify_merch: formData.has('notify_merch')
+        });
+        state.userProfile = null;
+        await loadLoginPage();
+        notify('Notification preferences updated.', 'Preferences saved', 'success');
+      } catch (error) {
+        notify(error.message, 'Preferences update failed', 'error');
+      }
+      return;
+    }
+
     const form = e.target.closest('#login-form');
     if (form) {
       e.preventDefault();
@@ -1673,7 +1795,7 @@ function setupEventListeners() {
           window.location.hash = '#/login';
           renderActivePage();
         } catch (error) {
-          alert(error.message);
+          notify(error.message || 'Could not reset your password. Please try again.', 'Password reset failed', 'error');
         }
         return;
       }
@@ -1688,7 +1810,7 @@ function setupEventListeners() {
           state.authMode = 'login';
           renderActivePage();
         } catch (error) {
-          alert(error.message);
+          notify(error.message || 'Unable to send reset instructions. Please try again.', 'Reset request failed', 'error');
         }
         return;
       }
@@ -1723,8 +1845,9 @@ function setupEventListeners() {
           window.location.hash = '#/home';
           await loadNotifications();
           renderActivePage();
+          await notify(`Welcome to Bravehearts, ${name}! Your account has been created successfully.`, 'Registration successful', 'success');
         } catch (error) {
-          alert(error.message);
+          notify(error.message || 'Could not create your account. Please try again.', 'Registration failed', 'error');
         }
         return;
       }
@@ -1751,8 +1874,9 @@ function setupEventListeners() {
         window.location.hash = '#/home';
         await loadNotifications();
         renderActivePage();
+        await notify(`Welcome back${response.name ? `, ${response.name}` : ''}! You have logged in successfully.`, 'Login successful', 'success');
       } catch (error) {
-        alert(error.message);
+        notify(error.message || 'Invalid email or password. Please check your details and try again.', 'Login failed', 'error');
       }
     }
   });

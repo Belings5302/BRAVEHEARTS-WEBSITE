@@ -6,6 +6,8 @@ const { validate, schemas } = require('../middleware/validation');
 const { authRateLimiter } = require('../middleware/security');
 const { asyncHandler } = require('../middleware/errorHandler');
 const { sendPasswordResetEmail } = require('../services/email');
+const path = require('path');
+const fs = require('fs');
 
 // User registration
 router.post('/register', authRateLimiter, validate(schemas.register), asyncHandler(async (req, res) => {
@@ -44,6 +46,86 @@ router.post('/login', authRateLimiter, validate(schemas.login), asyncHandler(asy
       return res.status(403).json({ error: 'Your account has been banned. Please contact support at info@bravehearts.mw.' });
     }
     res.json({ userId: user.id, name: user.name, email: user.email, subscriptionStatus: user.subscription_status });
+  });
+}));
+
+// User profile photo upload
+router.post('/:id/profile-photo', asyncHandler(async (req, res) => {
+  const { fileName, fileData } = req.body;
+  if (!fileName || !fileData) {
+    return res.status(400).json({ error: 'Filename and base64 image data are required.' });
+  }
+
+  const match = String(fileData).match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) {
+    return res.status(400).json({ error: 'Only image uploads are supported.' });
+  }
+
+  const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp', 'image/avif', 'image/x-icon']);
+  if (!allowedMimeTypes.has(match[1])) {
+    return res.status(400).json({ error: 'Unsupported image type.' });
+  }
+
+  const extension = path.extname(fileName).toLowerCase() || '.jpg';
+  const cleanName = `profile-${req.params.id}-${Date.now()}-${Math.floor(Math.random() * 10000)}${extension}`;
+  const uploadsDir = path.join(__dirname, '../../uploads');
+  const filePath = path.join(uploadsDir, cleanName);
+
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.writeFile(filePath, Buffer.from(match[2], 'base64'), (err) => {
+    if (err) return res.status(500).json({ error: 'Failed to save uploaded image.' });
+    res.json({ success: true, url: `/uploads/${cleanName}`, imageUrl: `/uploads/${cleanName}` });
+  });
+}));
+
+// User profile
+router.get('/:id/profile', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  db.get(
+    `SELECT id, name, email, subscription_status, created_at, profile_photo_url, favorite_team, favorite_player,
+            notify_game_reminders, notify_live_scores, notify_news, notify_merch
+     FROM users WHERE id = ?`,
+    [id],
+    (err, user) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!user) return res.status(404).json({ error: 'User not found.' });
+
+      db.get(
+        `SELECT expires_at FROM subscriptions
+         WHERE user_id = ? AND status = 'active'
+         ORDER BY expires_at DESC LIMIT 1`,
+        [id],
+        (subErr, subscription) => {
+          if (subErr) return res.status(500).json({ error: subErr.message });
+          res.json({ profile: { ...user, membership_expires_at: subscription?.expires_at || null } });
+        }
+      );
+    }
+  );
+}));
+
+router.patch('/:id/profile', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const allowed = ['name', 'profile_photo_url', 'favorite_team', 'favorite_player', 'notify_game_reminders', 'notify_live_scores', 'notify_news', 'notify_merch'];
+  const updates = [];
+  const params = [];
+
+  allowed.forEach(field => {
+    if (Object.prototype.hasOwnProperty.call(req.body, field)) {
+      updates.push(`${field} = ?`);
+      params.push(req.body[field]);
+    }
+  });
+
+  if (!updates.length) return res.status(400).json({ error: 'No profile fields provided.' });
+
+  updates.push('updated_at = ?');
+  params.push(new Date().toISOString(), id);
+
+  db.run(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, params, function(err) {
+    if (err) return res.status(500).json({ error: err.message });
+    if (this.changes === 0) return res.status(404).json({ error: 'User not found.' });
+    res.json({ success: true });
   });
 }));
 

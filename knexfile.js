@@ -1,41 +1,39 @@
 require('dotenv').config();
 
-module.exports = {
-  development: {
-    client: 'sqlite3',
-    connection: {
-      filename: process.env.DB_PATH || './data/database.sqlite'
-    },
-    useNullAsDefault: true,
-    migrations: {
-      directory: './server/migrations'
-    }
-  },
-  
-  production: {
-    client: 'pg',
-    connection: {
-      host: process.env.DB_HOST || 'localhost',
-      port: process.env.DB_PORT || 5432,
-      database: process.env.DB_NAME || 'bravehearts',
-      user: process.env.DB_USER || 'postgres',
-      password: process.env.DB_PASSWORD
-    },
-    pool: {
-      min: 2,
-      max: 10
-    },
-    migrations: {
-      directory: './server/migrations'
-    }
-  },
+function getPostgresConnection() {
+  if (process.env.DATABASE_URL) {
+    return {
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false }
+    };
+  }
 
+  return {
+    host: process.env.DB_HOST || 'localhost',
+    port: Number(process.env.DB_PORT || 5432),
+    database: process.env.DB_NAME || 'bravehearts',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || undefined
+  };
+}
+
+const postgresConfig = {
+  client: 'pg',
+  connection: getPostgresConnection(),
+  pool: {
+    min: 2,
+    max: 10
+  },
+  migrations: {
+    directory: './server/migrations'
+  }
+};
+
+module.exports = {
+  development: postgresConfig,
+  production: postgresConfig,
   test: {
-    client: 'sqlite3',
-    connection: ':memory:',
-    useNullAsDefault: true,
-    migrations: {
-      directory: './server/migrations'
-    }
+    ...postgresConfig,
+    connection: process.env.TEST_DATABASE_URL || getPostgresConnection()
   }
 };

@@ -38,7 +38,7 @@ router.get('/:id', asyncHandler(async (req, res) => {
 // Public: Get game stats
 router.get('/:id/stats', asyncHandler(async (req, res) => {
   const { id } = req.params;
-  db.all('SELECT * FROM player_stats WHERE game_id = ? AND is_active = 1 ORDER BY CAST(player_number AS INTEGER) ASC, player_number ASC', [id], (err, rows) => {
+  db.all('SELECT * FROM player_stats WHERE game_id = ? AND is_active = TRUE ORDER BY CAST(player_number AS INTEGER) ASC, player_number ASC', [id], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ stats: rows || [] });
   });
@@ -250,7 +250,7 @@ router.delete('/admin/stats/:id', adminAuthMiddleware, asyncHandler(async (req, 
 
       // Auto-calculate total score from player points
       db.all(
-        'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = 1',
+        'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = TRUE',
         [gameId],
         (sumErr, sumRow) => {
           if (!sumErr && sumRow && sumRow.total_points !== null) {

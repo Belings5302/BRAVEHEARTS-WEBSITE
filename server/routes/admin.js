@@ -717,7 +717,7 @@ function importStatsRows(gameId, rows, now) {
 // Game stats admin routes
 router.get('/games/:id/stats', adminAuthMiddleware, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  db.all('SELECT * FROM player_stats WHERE game_id = ? AND is_active = 1 ORDER BY CAST(player_number AS INTEGER) ASC, player_number ASC', [id], (err, rows) => {
+  db.all('SELECT * FROM player_stats WHERE game_id = ? AND is_active = TRUE ORDER BY CAST(player_number AS INTEGER) ASC, player_number ASC', [id], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ stats: rows || [] });
   });
@@ -741,7 +741,7 @@ router.post('/games/:id/stats', adminAuthMiddleware, asyncHandler(async (req, re
 
       // Auto-calculate total score from player points
       db.all(
-        'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = 1',
+        'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = TRUE',
         [id],
         (sumErr, sumRow) => {
           if (!sumErr && sumRow && sumRow.total_points !== null) {
@@ -826,7 +826,7 @@ router.post(['/games/:id/stats/import', '/games/:id/stats:import'], adminAuthMid
       defensive_rebounds = excluded.defensive_rebounds,
       plus_minus = excluded.plus_minus,
       efficiency = excluded.efficiency,
-      is_active = 1,
+      is_active = TRUE,
       updated_at = excluded.updated_at`;
 
   db.serialize(() => {
@@ -835,7 +835,7 @@ router.post(['/games/:id/stats/import', '/games/:id/stats:import'], adminAuthMid
     let failed = false;
 
     const finish = () => {
-      db.run('UPDATE games SET our_score = (SELECT COALESCE(SUM(points), 0) FROM player_stats WHERE game_id = ? AND is_active = 1), updated_at = ? WHERE id = ?', [gameId, now, gameId], () => {
+      db.run('UPDATE games SET our_score = (SELECT COALESCE(SUM(points), 0) FROM player_stats WHERE game_id = ? AND is_active = TRUE), updated_at = ? WHERE id = ?', [gameId, now, gameId], () => {
         db.run('COMMIT', commitErr => {
           if (commitErr) return res.status(500).json({ error: commitErr.message });
           db.run('INSERT INTO admin_logs (admin_id, action, target, details, created_at) VALUES (?, ?, ?, ?, ?)', [req.admin.id, 'import_game_stats', gameId, `Imported ${validRows.length} player stat rows`, now]);
@@ -928,7 +928,7 @@ router.put(['/games/stats/:id', '/stats/:id'], adminAuthMiddleware, asyncHandler
     db.get('SELECT game_id FROM player_stats WHERE id = ?', [id], (err, statRow) => {
       if (!err && statRow) {
         db.all(
-          'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = 1',
+          'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = TRUE',
           [statRow.game_id],
           (sumErr, sumRow) => {
             if (!sumErr && sumRow && sumRow.total_points !== null) {
@@ -977,7 +977,7 @@ router.delete('/games/stats/:id', adminAuthMiddleware, superAdminOnly, asyncHand
 
       // Auto-calculate total score from player points
       db.all(
-        'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = 1',
+        'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = TRUE',
         [gameId],
         (sumErr, sumRow) => {
           if (!sumErr && sumRow && sumRow.total_points !== null) {
@@ -1035,7 +1035,7 @@ router.delete('/stats/:id', adminAuthMiddleware, superAdminOnly, asyncHandler(as
 
       // Auto-calculate total score from player points
       db.all(
-        'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = 1',
+        'SELECT SUM(points) as total_points FROM player_stats WHERE game_id = ? AND is_active = TRUE',
         [gameId],
         (sumErr, sumRow) => {
           if (!sumErr && sumRow && sumRow.total_points !== null) {

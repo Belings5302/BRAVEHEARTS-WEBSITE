@@ -96,6 +96,31 @@ router.get('/users/:id/orders', asyncHandler(async (req, res) => {
   );
 }));
 
+// Get user order detail
+router.get('/users/:userId/orders/:orderId', asyncHandler(async (req, res) => {
+  const { userId, orderId } = req.params;
+  db.get(
+    'SELECT * FROM orders WHERE id = ? AND user_id = ?',
+    [orderId, userId],
+    (err, order) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!order) return res.status(404).json({ error: 'Order not found.' });
+
+      db.all(
+        `SELECT oi.*, p.title, p.category
+         FROM order_items oi
+         JOIN products p ON oi.product_id = p.id
+         WHERE oi.order_id = ?`,
+        [orderId],
+        (itemsErr, items) => {
+          if (itemsErr) return res.status(500).json({ error: itemsErr.message });
+          res.json({ order: { ...order, items: items || [] } });
+        }
+      );
+    }
+  );
+}));
+
 // Admin: Get all orders
 router.get('/admin', adminAuthMiddleware, asyncHandler(async (req, res) => {
   const status = req.query.status || null;
