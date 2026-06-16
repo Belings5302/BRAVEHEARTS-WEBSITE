@@ -82,7 +82,10 @@ app.use((req, res, next) => {
 });
 
 // Serve static files
-app.use(express.static(path.join(__dirname)));
+const staticRoot = process.env.NODE_ENV === 'production'
+  ? path.join(__dirname, 'dist')
+  : __dirname;
+app.use(express.static(staticRoot));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // API Routes
@@ -133,7 +136,16 @@ app.get('/api/users/:id/subscription', (req, res) => {
   );
 });
 
-// 404 handgetLer()
+// SPA fallbacks for browser navigation/deep links.
+app.get('/admin.html', (req, res) => {
+  res.sendFile(path.join(staticRoot, 'admin.html'));
+});
+
+app.get(/^\/(?!api\/).*/, (req, res) => {
+  res.sendFile(path.join(staticRoot, 'index.html'));
+});
+
+// 404 handler for API/unknown non-page requests
 app.use(notFoundHandler);
 
 // Global error handler
