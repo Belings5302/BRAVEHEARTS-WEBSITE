@@ -413,12 +413,19 @@ export async function clearStandingsTable(sessionId, { season = '', teamCategory
 }
 
 export async function importStandingsFile(sessionId, file) {
-  const response = await fetch(`${ADMIN_API_BASE}/standings/import`, {
-    method: 'POST',
-    headers: { 'Content-Type': file.type || 'application/octet-stream', 'x-file-name': file.name, 'x-session-id': sessionId },
-    body: await file.arrayBuffer()
-  });
-  return handleResponse(response);
+  try {
+    const response = await fetch(`${ADMIN_API_BASE}/standings/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': file.type || 'application/octet-stream', 'x-file-name': file.name, 'x-session-id': sessionId },
+      body: await file.arrayBuffer()
+    });
+    return handleResponse(response);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error('Could not reach the server during standings import. Check Railway deployment/logs and try a smaller CSV/XLSX file.');
+    }
+    throw error;
+  }
 }
 
 // ============= POLLS MANAGEMENT =============

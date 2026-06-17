@@ -640,23 +640,28 @@ router.delete('/games/:id', adminAuthMiddleware, superAdminOnly, asyncHandler(as
 }));
 
 function readImportUpload(req, res, next) {
-  const chunks = [];
-  let size = 0;
-  req.on('data', chunk => {
-    chunks.push(chunk);
-    size += chunk.length;
-    if (size > 5 * 1024 * 1024) {
-      req.destroy(new Error('Import file is too large. Maximum size is 5MB.'));
-    }
-  });
-  req.on('end', () => {
-    const buffer = Buffer.concat(chunks);
+  const parseBuffer = (buffer) => {
     const contentType = String(req.headers['content-type'] || '').toLowerCase();
     const fileName = String(req.headers['x-file-name'] || '').toLowerCase();
     const isExcel = contentType.includes('spreadsheet') || contentType.includes('excel') || fileName.endsWith('.xlsx');
     req.importRows = isExcel ? parseSpreadsheet(buffer) : parseCsv(buffer.toString('utf8'));
     next();
+  };
+
+  if (Buffer.isBuffer(req.body)) {
+    return parseBuffer(req.body);
+  }
+
+  const chunks = [];
+  let size = 0;
+  req.on('data', chunk => {
+    chunks.push(chunk);
+    size += chunk.length;
+    if (size > 10 * 1024 * 1024) {
+      req.destroy(new Error('Import file is too large. Maximum size is 10MB.'));
+    }
   });
+  req.on('end', () => parseBuffer(Buffer.concat(chunks)));
   req.on('error', error => next(error));
 }
 

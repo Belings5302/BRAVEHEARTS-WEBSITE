@@ -51,6 +51,12 @@ app.use(cors({
   credentials: true
 }));
 
+// Raw import uploads must be parsed before JSON/urlencoded parsers.
+app.use(['/api/admin/standings/import', '/api/admin/standings:import', /^\/api\/admin\/games\/[^/]+\/stats(?::import|\/import)$/], express.raw({
+  type: '*/*',
+  limit: '10mb'
+}));
+
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
