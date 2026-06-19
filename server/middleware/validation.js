@@ -13,7 +13,12 @@ const schemas = {
     password: Joi.string().required(),
   }),
 
+  googleAuth: Joi.object({
+    credential: Joi.string().required(),
+  }),
+
   forgotPassword: Joi.object({
+
     email: Joi.string().email().required(),
   }),
 

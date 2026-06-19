@@ -8,6 +8,7 @@ const { authRateLimiter } = require('../middleware/security');
 const { asyncHandler, logger } = require('../middleware/errorHandler');
 const { triggerUpdate } = require('../utils');
 const { parseCsv, parseSpreadsheet, toInt } = require('../services/csv-import');
+const { sendPasswordResetEmail } = require('../services/email');
 
 function superAdminOnly(req, res, next) {
   if (req.admin?.role !== 'super-admin') {
@@ -76,14 +77,23 @@ router.post('/auth/forgot-password', authRateLimiter, validate(schemas.forgotPas
   db.get('SELECT id FROM admins WHERE email = ?', [email], (err, admin) => {
     if (err) return res.status(500).json({ error: err.message });
 
-    if (admin) {
-      db.run(
-        'INSERT INTO password_reset_tokens (token, admin_id, type, expires_at, created_at) VALUES (?, ?, ?, ?, ?)',
-        [token, admin.id, 'admin', expiresAt, now]
-      );
+    if (!admin) {
+      return res.json({ success: true, message: 'If an admin account with that email exists, a password reset link has been generated.' });
     }
 
-    res.json({ success: true, message: 'If an admin account with that email exists, a password reset link has been generated.' });
+    db.run(
+      'INSERT INTO password_reset_tokens (token, admin_id, type, expires_at, created_at) VALUES (?, ?, ?, ?, ?)',
+      [token, admin.id, 'admin', expiresAt, now],
+      async insertErr => {
+        if (insertErr) return res.status(500).json({ error: insertErr.message });
+        try {
+          await sendPasswordResetEmail({ to: email, token, accountType: 'admin' });
+          res.json({ success: true, message: 'If an admin account with that email exists, a password reset link has been generated.' });
+        } catch (sendErr) {
+          res.status(500).json({ error: 'Unable to send password reset email. Please try again later.' });
+        }
+      }
+    );
   });
 }));
 
@@ -93,14 +103,14 @@ router.post('/auth/reset-password', authRateLimiter, validate(schemas.resetPassw
   const now = new Date().toISOString();
   const passwordHash = hashPassword(newPassword);
 
-  db.get('SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > ?', [token, now], (err, row) => {
+  db.get('SELECT * FROM password_reset_tokens WHERE token = ? AND used = ? AND expires_at > ?', [token, false, now], (err, row) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!row) {
       return res.status(400).json({ error: 'Invalid or expired reset token.' });
     }
 
     const updatePassword = () => {
-      db.run('UPDATE password_reset_tokens SET used = 1 WHERE id = ?', [row.id], (updateErr) => {
+      db.run('UPDATE password_reset_tokens SET used = ? WHERE id = ?', [true, row.id], (updateErr) => {
         if (updateErr) return res.status(500).json({ error: updateErr.message });
         res.json({ success: true, message: 'Password has been reset successfully.' });
       });
@@ -173,33 +183,11 @@ router.get('/dashboard/recent-orders', adminAuthMiddleware, asyncHandler(async (
 // Get all users
 router.get('/users', adminAuthMiddleware, asyncHandler(async (req, res) => {
   db.all(
-    `SELECT id, name, email, subscription_status, is_banned, created_at, updated_at FROM users ORDER BY created_at DESC`,
+    `SELECT id, name, email, subscription_status, is_banned, is_deleted, deleted_at, created_at, updated_at FROM users WHERE COALESCE(is_deleted, false) = false ORDER BY created_at DESC`,
     [],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ users: rows });
-    }
-  );
-}));
-
-// Get user detail
-router.get('/users/:id', adminAuthMiddleware, asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  db.get(
-    `SELECT id, name, email, subscription_status, is_banned, created_at, updated_at FROM users WHERE id = ?`,
-    [id],
-    (err, user) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!user) return res.status(404).json({ error: 'User not found.' });
-
-      db.all(
-        `SELECT s.*, p.title FROM subscriptions s JOIN products p ON s.product_id = p.id WHERE s.user_id = ?`,
-        [id],
-        (err, subscriptions) => {
-          if (err) return res.status(500).json({ error: err.message });
-          res.json({ user: { ...user, subscriptions } });
-        }
-      );
     }
   );
 }));
@@ -249,6 +237,61 @@ router.put('/users/:id/ban', adminAuthMiddleware, asyncHandler(async (req, res) 
       );
 
       res.json({ success: true, message: `User ban status updated to ${is_banned ? 'Banned' : 'Active'}.` });
+    }
+  );
+}));
+
+// Soft-delete/anonymize user while preserving historical records
+router.delete('/users/:id', adminAuthMiddleware, superAdminOnly, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const now = new Date().toISOString();
+
+  db.get('SELECT id, name, email, is_deleted FROM users WHERE id = ?', [id], (getErr, user) => {
+    if (getErr) return res.status(500).json({ error: getErr.message });
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (user.is_deleted) return res.status(409).json({ error: 'User has already been deleted.' });
+
+    const anonymizedEmail = `deleted-user-${id}@bravehearts.local`;
+    const anonymizedName = `Deleted User ${id}`;
+    const anonymizedPasswordHash = `deleted-${crypto.randomBytes(32).toString('hex')}`;
+    db.run(
+      `UPDATE users
+       SET name = ?, email = ?, password_hash = ?, subscription_status = ?, is_banned = ?,
+           profile_photo_url = ?, favorite_team = ?, favorite_player = ?,
+           email_verified = ?, email_verification_token = ?, email_verification_expires_at = ?,
+           is_deleted = ?, deleted_at = ?, updated_at = ?
+       WHERE id = ?`,
+      [anonymizedName, anonymizedEmail, anonymizedPasswordHash, 'deleted', true, null, null, null, false, null, null, true, now, now, id],
+      function(updateErr) {
+        if (updateErr) return res.status(500).json({ error: updateErr.message });
+        db.run(
+          'INSERT INTO admin_logs (admin_id, action, target, details, created_at) VALUES (?, ?, ?, ?, ?)',
+          [req.admin.id, 'delete_user', id, `Anonymized/deleted user ${id} (${user.email})`, now]
+        );
+        res.json({ success: true, message: 'User deleted from active accounts. Historical orders, payments, polls, and logs were preserved.' });
+      }
+    );
+  });
+}));
+
+// Get user detail
+router.get('/users/:id', adminAuthMiddleware, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  db.get(
+    `SELECT id, name, email, subscription_status, is_banned, is_deleted, deleted_at, created_at, updated_at FROM users WHERE id = ?`,
+    [id],
+    (err, user) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!user) return res.status(404).json({ error: 'User not found.' });
+
+      db.all(
+        `SELECT s.*, p.title FROM subscriptions s JOIN products p ON s.product_id = p.id WHERE s.user_id = ?`,
+        [id],
+        (err, subscriptions) => {
+          if (err) return res.status(500).json({ error: err.message });
+          res.json({ user: { ...user, subscriptions } });
+        }
+      );
     }
   );
 }));
@@ -519,7 +562,7 @@ router.put('/orders/:id/status', adminAuthMiddleware, asyncHandler(async (req, r
   const { id } = req.params;
   const { status } = req.body;
 
-  if (!['pending', 'paid', 'shipped', 'cancelled'].includes(status)) {
+  if (!['pending', 'awaiting_verification', 'paid', 'shipped', 'cancelled', 'rejected'].includes(status)) {
     return res.status(400).json({ error: 'Invalid status.' });
   }
 
@@ -547,6 +590,60 @@ router.put('/orders/:id/status', adminAuthMiddleware, asyncHandler(async (req, r
       res.json({ success: true, message: `Order status updated to ${status}.` });
     }
   );
+}));
+
+router.post('/orders/:id/verify-payment', adminAuthMiddleware, asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { decision, reason = '' } = req.body;
+  const now = new Date().toISOString();
+
+  if (!['confirm', 'reject'].includes(decision)) {
+    return res.status(400).json({ error: 'Decision must be confirm or reject.' });
+  }
+
+  db.get('SELECT * FROM orders WHERE id = ?', [id], (getErr, order) => {
+    if (getErr) return res.status(500).json({ error: getErr.message });
+    if (!order) return res.status(404).json({ error: 'Order not found.' });
+    if (!['awaiting_verification', 'pending'].includes(order.status)) {
+      return res.status(409).json({ error: `Order is ${order.status} and cannot be verified from this state.` });
+    }
+
+    if (decision === 'reject') {
+      db.run('UPDATE payments SET status = ?, updated_at = ? WHERE order_id = ?', ['rejected', now, id]);
+      db.run('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?', ['rejected', now, id], function(updateErr) {
+        if (updateErr) return res.status(500).json({ error: updateErr.message });
+        db.run(
+          'INSERT INTO admin_logs (admin_id, action, target, details, created_at) VALUES (?, ?, ?, ?, ?)',
+          [req.admin.id, 'reject_payment', id, reason || 'Payment rejected', now]
+        );
+        db.run('INSERT INTO notifications (user_id, title, message, created_at) VALUES (?, ?, ?, ?)', [order.user_id, 'Payment rejected', `Your payment for order ${order.reference} was rejected.${reason ? ` Reason: ${reason}` : ''}`, now]);
+        res.json({ success: true, message: 'Payment rejected.' });
+      });
+      return;
+    }
+
+    db.run('UPDATE payments SET status = ?, transaction_id = ?, updated_at = ? WHERE order_id = ?', ['confirmed', `MM-${Date.now()}`, now, id]);
+    db.run('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?', ['paid', now, id]);
+    db.run('UPDATE subscriptions SET status = ?, updated_at = ? WHERE payment_reference = ?', ['active', now, order.reference]);
+    db.run('UPDATE users SET subscription_status = ? , updated_at = ? WHERE id = ?', ['active', now, order.user_id]);
+    db.run(
+      'INSERT INTO admin_logs (admin_id, action, target, details, created_at) VALUES (?, ?, ?, ?, ?)',
+      [req.admin.id, 'confirm_payment', id, `Payment confirmed for ${order.reference}`, now]
+    );
+    db.run('INSERT INTO notifications (user_id, title, message, created_at) VALUES (?, ?, ?, ?)', [order.user_id, 'Payment confirmed', `Your payment for order ${order.reference} has been confirmed.`, now]);
+
+    db.get('SELECT name, email FROM users WHERE id = ?', [order.user_id], (userErr, user) => {
+      if (!userErr && user?.email) {
+        sendPaymentConfirmedEmail({
+          to: user.email,
+          name: user.name,
+          reference: order.reference,
+          totalMwk: order.total_mwk
+        }).catch(error => console.warn('Failed to send payment email:', error.message));
+      }
+      res.json({ success: true, message: 'Payment confirmed and order marked paid.' });
+    });
+  });
 }));
 
 // Games admin routes
@@ -1343,6 +1440,13 @@ function normalizeStandingRow(row) {
 }
 
 // Standings admin routes
+router.get('/standings', adminAuthMiddleware, asyncHandler(async (req, res) => {
+  db.all('SELECT * FROM standings ORDER BY tournament ASC, season DESC, points DESC, won DESC', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ standings: rows || [] });
+  });
+}));
+
 router.post(['/standings/import', '/standings:import'], adminAuthMiddleware, readImportUpload, asyncHandler(async (req, res) => {
   const rows = req.importRows || [];
   if (rows.length === 0) {
@@ -1380,6 +1484,10 @@ router.post(['/standings/import', '/standings:import'], adminAuthMiddleware, rea
         res.json({ success: true, summary: { totalRows: rows.length, importedRows: validRows.length, createdRows: created, updatedRows: updated } });
       });
     };
+
+    if (validRows.length === 0) {
+      return done();
+    }
 
     validRows.forEach(row => {
       db.get(selectSql, [row.season, row.tournament, row.team_category, row.team_name], (getErr, existing) => {

@@ -16,17 +16,23 @@ function getOrderStatusStyle(status) {
   return { bg: 'rgba(255, 165, 0, 0.15)', color: '#ffa500' };
 }
 
-export function renderLogin(user, mode = 'login', subscriptionPaid = false, orders = [], resetMode = false, resetError = null, profile = null, selectedOrder = null, players = []) {
+export function renderLogin(user, mode = 'login', subscriptionPaid = false, orders = [], resetMode = false, resetError = null, profile = null, selectedOrder = null, players = [], resetToken = '') {
   if (user) {
     const recentOrders = orders.slice(0, 5);
     const paidOrders = orders.filter(order => order.status === 'paid');
     const totalSpent = paidOrders.reduce((sum, order) => sum + Number(order.total_mwk || 0), 0);
     const latestOrder = orders[0];
-    const displayName = String(profile?.name || '').trim() || 'Member';
+    const displayName = String(profile?.name || '').trim() || String(user || '').split('@')[0] || 'Member';
     const profilePhotoUrl = profile?.profile_photo_url || '';
+    const avatarContent = profilePhotoUrl ? `<img src="${profilePhotoUrl}" alt="${displayName}">` : `<i data-lucide="user"></i>`;
     const favoriteTeam = profile?.favorite_team || '';
     const favoritePlayer = profile?.favorite_player || '';
-    const teamPlayers = favoriteTeam ? players.filter(player => player.team === favoriteTeam) : [];
+    const normalizeTeam = value => {
+      const normalized = String(value || '').trim().toLowerCase();
+      if (normalized === 'women') return 'ladies';
+      return normalized;
+    };
+    const teamPlayers = favoriteTeam ? players.filter(player => normalizeTeam(player.team) === normalizeTeam(favoriteTeam)) : [];
     const membershipExpiresAt = profile?.membership_expires_at || null;
     const subscriptionLabel = subscriptionPaid ? 'Active Member' : 'Payment Pending';
     const subscriptionTone = subscriptionPaid
@@ -77,13 +83,14 @@ export function renderLogin(user, mode = 'login', subscriptionPaid = false, orde
                   <span class="account-kicker">Profile summary</span>
                   <h3>Welcome back, ${displayName}</h3>
                 </div>
-                <div class="account-avatar">${profilePhotoUrl ? `<img src="${profilePhotoUrl}" alt="${displayName}">` : `<i data-lucide="user"></i>`}</div>
+                <button class="account-avatar account-avatar-button" type="button" data-profile-photo-trigger="true" aria-label="View or change profile photo">
+                  ${avatarContent}
+                  <span class="account-avatar-edit-badge"><i data-lucide="camera"></i></span>
+                </button>
               </div>
-              <div class="account-profile-email">${displayName}<span>${user}</span></div>
               <form class="account-profile-form" data-account-profile-form="true">
-                <input class="login-input" name="name" value="${displayName}" placeholder="Full name" />
                 <input class="login-input" type="hidden" name="profile_photo_url" value="${profilePhotoUrl}" />
-                <input class="login-input" type="file" name="profile_photo_file" accept="image/*,.jpg,.jpeg,.png,.gif,.webp,.svg,.bmp,.avif,.ico" />
+                <input class="account-hidden-file" type="file" name="profile_photo_file" accept="image/*,.jpg,.jpeg,.png,.gif,.webp,.svg,.bmp,.avif,.ico" />
                 <div class="account-form-row">
                   <select class="login-input" name="favorite_team" data-favorite-team-select="true">
                     <option value="" ${!favoriteTeam ? 'selected' : ''}>Choose favourite team</option>
@@ -92,8 +99,8 @@ export function renderLogin(user, mode = 'login', subscriptionPaid = false, orde
                     <option value="boys" ${favoriteTeam === 'boys' ? 'selected' : ''}>BH Boys</option>
                     <option value="girls" ${favoriteTeam === 'girls' ? 'selected' : ''}>BH Girls</option>
                   </select>
-                  <select class="login-input" name="favorite_player" ${favoriteTeam ? '' : 'disabled'} data-favorite-player-select="true">
-                    <option value="" ${!favoritePlayer ? 'selected' : ''}>${favoriteTeam ? 'Choose favourite player' : 'Select team first'}</option>
+                  <select class="login-input" name="favorite_player" ${favoriteTeam && teamPlayers.length ? '' : 'disabled'} data-favorite-player-select="true">
+                    <option value="" ${!favoritePlayer ? 'selected' : ''}>${favoriteTeam ? (teamPlayers.length ? 'Choose favourite player' : 'No roster players found') : 'Select team first'}</option>
                     ${teamPlayers.map(player => `<option value="${player.name}" ${favoritePlayer === player.name ? 'selected' : ''}>${player.name}</option>`).join('')}
                   </select>
                 </div>
@@ -219,7 +226,7 @@ export function renderLogin(user, mode = 'login', subscriptionPaid = false, orde
               <label class="login-label" for="confirm_password">Confirm New Password</label>
               <input class="login-input" type="password" name="confirm_password" id="confirm_password" placeholder="Confirm new password" required minlength="6" />
 
-              <input type="hidden" name="reset_token" id="reset_token" value="" />
+              <input type="hidden" name="reset_token" id="reset_token" value="${resetToken}" />
 
               ${resetError ? `<p style="color: #ff4757; font-size: 0.9rem; margin-top: 8px;">${resetError}</p>` : ''}
 
@@ -286,6 +293,16 @@ export function renderLogin(user, mode = 'login', subscriptionPaid = false, orde
 
             <button class="btn btn-primary" type="submit" style="width: 100%; margin-top: 10px;">${submitText}</button>
           </form>
+
+          ${!isForgot ? `
+            <div class="auth-divider"><span>or</span></div>
+            <div class="google-signin-container" data-google-signin-container="true">
+              <button class="btn google-signin-btn" type="button" data-google-signin="true">
+                <span class="google-g-mark">G</span>
+                Continue with Google
+              </button>
+            </div>
+          ` : ''}
 
           <p class="auth-bottom-note">
             ${isRegister

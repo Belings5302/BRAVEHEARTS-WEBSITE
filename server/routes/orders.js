@@ -4,6 +4,7 @@ const { db } = require('../db');
 const { validate, schemas } = require('../middleware/validation');
 const { adminAuthMiddleware } = require('../middleware/admin-auth');
 const { asyncHandler } = require('../middleware/errorHandler');
+const { sendOrderCreatedEmail, sendPaymentConfirmedEmail } = require('../services/email');
 
 // Checkout
 router.post('/checkout', validate(schemas.checkout), asyncHandler(async (req, res) => {
@@ -60,7 +61,18 @@ router.post('/checkout', validate(schemas.checkout), asyncHandler(async (req, re
         itemStmt.finalize();
         paymentStmt.finalize();
 
-        res.json({ orderId, reference, message: 'Order created. Please complete the mobile money payment and confirm.' });
+        db.get('SELECT name, email FROM users WHERE id = ?', [userId], (userErr, user) => {
+          if (!userErr && user?.email) {
+            sendOrderCreatedEmail({
+              to: user.email,
+              name: user.name,
+              reference,
+              totalMwk,
+              paymentMethod
+            }).catch(error => console.warn('Failed to send order email:', error.message));
+          }
+          res.json({ orderId, reference, message: 'Order created. Please complete the mobile money payment and confirm.' });
+        });
       });
     });
   });
@@ -75,11 +87,8 @@ router.post('/payments/confirm', validate(schemas.confirmPayment), asyncHandler(
     if (err) return res.status(500).json({ error: err.message });
     if (this.changes === 0) return res.status(404).json({ error: 'Payment not found.' });
 
-    db.run('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?', ['paid', now, orderId]);
-    db.run('UPDATE subscriptions SET status = ?, updated_at = ? WHERE payment_reference = (SELECT reference FROM orders WHERE id = ?) ', ['active', now, orderId]);
-    db.run('UPDATE users SET subscription_status = ? , updated_at = ? WHERE id = (SELECT user_id FROM orders WHERE id = ?)', ['active', now, orderId]);
-
-    res.json({ success: true, message: 'Payment confirmed. Your order is now marked paid.' });
+    db.run('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?', ['awaiting_verification', now, orderId]);
+    res.json({ success: true, message: 'Payment submitted. An admin will verify it shortly.' });
   });
 }));
 

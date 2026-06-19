@@ -13,8 +13,10 @@ import { renderNewsFeed, renderArticleDetailsModal } from './components/news.js'
 import { renderGallery } from './components/gallery.js';
 import { getYouTubeEmbedUrl } from './youtube.js';
 import {
+  fetchPublicConfig,
   registerUser,
   loginUser,
+  loginWithGoogle,
   createOrder,
   confirmPayment,
   fetchProducts,
@@ -42,6 +44,8 @@ let realtimeSocket = null;
 let realtimeReconnectTimer = null;
 
 // Client-side trackers for the last known updates
+let googleClientId = import.meta?.env?.VITE_GOOGLE_CLIENT_ID || '';
+
 const clientLastUpdates = {
   products: 0,
   games: 0,
@@ -203,17 +207,19 @@ async function handleUpdatesDetected({ productsUpdated, gamesUpdated, playersUpd
     } else {
       const rosterTeamMatch = hash.match(/^#\/roster\/([^\/]+)$/);
       const playerMatch = hash.match(/^#\/player\/([^\/]+)$/);
+      if (state.user) {
       if (rosterTeamMatch) {
         await loadDynamicTeamPage(rosterTeamMatch[1], true);
       } else if (playerMatch) {
         await loadDynamicPlayerPage(playerMatch[1], true);
       }
     }
+    }
   }
 
   if (statsUpdated || gamesUpdated) {
     const gameStatsMatch = hash.match(/^#\/game\/([^\/]+)$/);
-    if (gameStatsMatch) {
+    if (gameStatsMatch && state.user) {
       await loadGameStatsPage(gameStatsMatch[1], true);
     }
   }
@@ -1056,9 +1062,11 @@ async function loadLoginPage() {
   const mainContent = document.getElementById('main-content');
   if (!mainContent) return;
 
-  const urlParams = new URLSearchParams(window.location.hash.split('?')[1] || '');
-  const resetMode = urlParams.get('resetMode') === 'true';
-  const resetError = urlParams.get('error') || null;
+  const hashParams = new URLSearchParams(window.location.hash.split('?')[1] || '');
+  const searchParams = new URLSearchParams(window.location.search || '');
+  const resetMode = hashParams.get('resetMode') === 'true' || searchParams.get('resetMode') === 'true' || Boolean(hashParams.get('token') || searchParams.get('token'));
+  const resetToken = hashParams.get('token') || searchParams.get('token') || '';
+  const resetError = hashParams.get('error') || searchParams.get('error') || null;
 
   try {
     let orders = [];
@@ -1072,11 +1080,13 @@ async function loadLoginPage() {
       state.userProfile = profileResponse.profile || null;
       state.accountPlayers = playersResponse.players || [];
     }
-    mainContent.innerHTML = renderLogin(state.user, state.authMode, state.subscriptionPaid, orders, resetMode, resetError, state.userProfile, state.selectedAccountOrder, state.accountPlayers);
+    mainContent.innerHTML = renderLogin(state.user, state.authMode, state.subscriptionPaid, orders, resetMode, resetError, state.userProfile, state.selectedAccountOrder, state.accountPlayers, resetToken);
     if (window.lucide) window.lucide.createIcons();
+    await renderGoogleSignInButton();
   } catch (err) {
-    mainContent.innerHTML = renderLogin(state.user, state.authMode, state.subscriptionPaid, [], resetMode, resetError, state.userProfile, state.selectedAccountOrder, state.accountPlayers);
+    mainContent.innerHTML = renderLogin(state.user, state.authMode, state.subscriptionPaid, [], resetMode, resetError, state.userProfile, state.selectedAccountOrder, state.accountPlayers, resetToken);
     if (window.lucide) window.lucide.createIcons();
+    await renderGoogleSignInButton();
   }
 }
 
@@ -1273,6 +1283,22 @@ function updateActiveNavLink(hash = window.location.hash || '#/home') {
   });
 }
 
+function isPublicRoute(hash = window.location.hash || '#/home') {
+  return hash === '#/home' || hash === '#' || hash === '' || hash.startsWith('#/login');
+}
+
+function redirectToLoginForProtectedRoute(hash) {
+  if (isPublicRoute(hash) || hash.startsWith('#/login')) return false;
+  if (state.user) return false;
+  state.authMode = 'login';
+  try {
+    sessionStorage.setItem('bh_after_login_redirect', hash);
+  } catch (_) {}
+  window.location.hash = '#/login';
+  notify('Please create an account or log in to continue.', 'Login required', 'warning');
+  return true;
+}
+
 function bindSmartBackButtons(root = document) {
   root.querySelectorAll('[data-smart-back]').forEach(button => {
     if (button.dataset.backBound === 'true') return;
@@ -1294,6 +1320,18 @@ async function renderActivePage() {
   const mainContent = document.getElementById('main-content');
 
   if (!mainContent) return;
+  if (await completeGoogleRedirectLoginIfPresent()) return;
+  const routeParams = new URLSearchParams(hash.split('?')[1] || '');
+  const browserParams = new URLSearchParams(window.location.search || '');
+  const hasResetRequest = routeParams.get('resetMode') === 'true' || browserParams.get('resetMode') === 'true' || Boolean(routeParams.get('token') || browserParams.get('token'));
+  if (hasResetRequest) {
+    state.authMode = 'login';
+    await loadLoginPage();
+    updateActiveNavLink('#/login');
+    updateCartView();
+    return;
+  }
+  if (redirectToLoginForProtectedRoute(hash)) return;
   updateCartButtonVisibility();
 
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -1453,6 +1491,99 @@ function toggleTheme() {
   applyTheme();
 }
 
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      existing.addEventListener('load', resolve, { once: true });
+      if (window.google?.accounts?.id) resolve();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.defer = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function handleAuthenticatedUser(response, successMessage) {
+  state.user = response.email;
+  state.userId = response.userId;
+  state.subscriptionPaid = response.subscriptionStatus === 'active' || response.subscriptionPaid === true;
+  localStorage.setItem('bh_user', response.email);
+  localStorage.setItem('bh_user_id', response.userId);
+  localStorage.setItem('bh_subscription_paid', String(state.subscriptionPaid));
+
+  const navLinks = document.getElementById('nav-links');
+  const bellBtn = document.getElementById('notification-bell-btn');
+  if (navLinks) navLinks.classList.remove('nav-auth-hidden');
+  updateCartButtonVisibility();
+  if (bellBtn) bellBtn.style.display = '';
+
+  const redirectAfterAuth = sessionStorage.getItem('bh_after_login_redirect') || '#/home';
+  sessionStorage.removeItem('bh_after_login_redirect');
+  window.location.hash = redirectAfterAuth;
+  await loadNotifications();
+  renderActivePage();
+  await notify(successMessage, 'Login successful', 'success');
+}
+
+async function handleGoogleCredentialResponse(googleResponse) {
+  try {
+    const response = await loginWithGoogle(googleResponse.credential);
+    await handleAuthenticatedUser(
+      response,
+      response.isNewUser
+        ? `Welcome to Bravehearts, ${response.name || 'member'}! Your account has been created with Google.`
+        : `Welcome back${response.name ? `, ${response.name}` : ''}! You have logged in with Google.`
+    );
+  } catch (error) {
+    await notify(error.message || 'Google sign-in failed. Please try again.', 'Google sign-in failed', 'error');
+  }
+}
+
+async function completeGoogleRedirectLoginIfPresent() {
+  const params = new URLSearchParams(window.location.search || '');
+  if (params.get('googleLogin') !== 'success') return false;
+  const response = {
+    userId: params.get('userId'),
+    email: params.get('email'),
+    name: params.get('name'),
+    subscriptionStatus: params.get('subscriptionStatus') || 'pending',
+    isNewUser: params.get('isNewUser') === 'true'
+  };
+  if (!response.userId || !response.email) return false;
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash || '#/home'}`);
+  await handleAuthenticatedUser(
+    response,
+    response.isNewUser
+      ? `Welcome to Bravehearts, ${response.name || 'member'}! Your account has been created with Google.`
+      : `Welcome back${response.name ? `, ${response.name}` : ''}! You have logged in with Google.`
+  );
+  return true;
+}
+
+async function getGoogleClientId() {
+  if (googleClientId) return googleClientId;
+  const config = await fetchPublicConfig();
+  googleClientId = config.googleClientId || '';
+  return googleClientId;
+}
+
+async function renderGoogleSignInButton() {
+  const container = document.querySelector('[data-google-signin-container]');
+  if (!container || container.dataset.googleRendered === 'true') return;
+  container.dataset.googleRendered = 'true';
+}
+
+async function startGoogleSignIn() {
+  const returnTo = sessionStorage.getItem('bh_after_login_redirect') || window.location.hash || '#/home';
+  window.location.href = `/api/auth/google/start?returnTo=${encodeURIComponent(returnTo)}`;
+}
+
 // Update Cart DOM drawer
 function updateCartView() {
   const badge = document.getElementById('global-cart-count');
@@ -1583,6 +1714,50 @@ function setupEventListeners() {
       return;
     }
 
+    const uploadSelectedProfilePhoto = async (fileInput) => {
+      if (!state.userId || !fileInput?.files?.[0]) return;
+      const photoFile = fileInput.files[0];
+      if (!photoFile.type.startsWith('image/')) {
+        await notify('Please select a valid image file.', 'Invalid image', 'warning');
+        fileInput.value = '';
+        return;
+      }
+      try {
+        const fileData = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('Could not read selected image.'));
+          reader.readAsDataURL(photoFile);
+        });
+        const upload = await uploadUserProfilePhoto(state.userId, photoFile.name, fileData);
+        const profilePhotoUrl = upload.imageUrl || upload.url;
+        await updateUserProfile(state.userId, { profile_photo_url: profilePhotoUrl });
+        state.userProfile = { ...(state.userProfile || {}), profile_photo_url: profilePhotoUrl };
+        fileInput.value = '';
+        await loadLoginPage();
+        await notify('Profile photo updated successfully.', 'Photo updated', 'success');
+      } catch (error) {
+        await notify(error.message, 'Photo update failed', 'error');
+      }
+    };
+
+    const profilePhotoTrigger = e.target.closest('[data-profile-photo-trigger]');
+    if (profilePhotoTrigger) {
+      const fileInput = document.querySelector('[data-account-profile-form] [name="profile_photo_file"]');
+      const currentPhoto = state.userProfile?.profile_photo_url || '';
+      const shouldEdit = currentPhoto
+        ? await showAppDialog({
+            title: 'Profile photo',
+            message: `<div class="account-photo-preview"><img src="${currentPhoto}" alt="Profile photo"></div>`,
+            type: 'info',
+            confirmText: 'Change Photo',
+            cancelText: 'Close'
+          })
+        : true;
+      if (shouldEdit) fileInput?.click();
+      return;
+    }
+
     const favoriteTeamSelect = e.target.closest('[data-favorite-team-select]');
     if (favoriteTeamSelect && state.userProfile) {
       state.userProfile = {
@@ -1590,8 +1765,32 @@ function setupEventListeners() {
         favorite_team: favoriteTeamSelect.value,
         favorite_player: ''
       };
-      state.selectedAccountOrder = null;
-      await loadLoginPage();
+      const playerSelect = document.querySelector('[data-favorite-player-select]');
+      if (playerSelect) {
+        const selectedTeam = String(favoriteTeamSelect.value || '').trim().toLowerCase();
+        playerSelect.disabled = true;
+        playerSelect.innerHTML = `<option value="">${selectedTeam ? 'Loading roster...' : 'Select team first'}</option>`;
+        try {
+          let rosterPlayers = state.accountPlayers;
+          if (!Array.isArray(rosterPlayers) || rosterPlayers.length === 0) {
+            const playersResponse = await fetchPlayers();
+            rosterPlayers = playersResponse.players || [];
+            state.accountPlayers = rosterPlayers;
+          }
+          const teamPlayers = rosterPlayers.filter(player => {
+            const playerTeam = String(player.team || '').trim().toLowerCase();
+            return playerTeam === selectedTeam || (selectedTeam === 'ladies' && playerTeam === 'women');
+          });
+          playerSelect.innerHTML = `
+            <option value="">${selectedTeam ? (teamPlayers.length ? 'Choose favourite player' : 'No roster players found') : 'Select team first'}</option>
+            ${teamPlayers.map(player => `<option value="${player.name}">${player.name}</option>`).join('')}
+          `;
+          playerSelect.disabled = !selectedTeam || teamPlayers.length === 0;
+        } catch (error) {
+          playerSelect.innerHTML = '<option value="">Could not load roster</option>';
+          await notify(error.message, 'Roster unavailable', 'error');
+        }
+      }
       return;
     }
 
@@ -1600,6 +1799,12 @@ function setupEventListeners() {
     if (modeBtn) {
       state.authMode = modeBtn.getAttribute('data-auth-mode');
       renderActivePage();
+      return;
+    }
+
+    const googleSignInBtn = e.target.closest('[data-google-signin]');
+    if (googleSignInBtn) {
+      await startGoogleSignIn();
       return;
     }
 
@@ -1695,6 +1900,14 @@ function setupEventListeners() {
     }
   }, 350));
 
+  document.addEventListener('change', async (e) => {
+    const profilePhotoInput = e.target.closest('[data-account-profile-form] [name="profile_photo_file"]');
+    if (profilePhotoInput) {
+      await uploadSelectedProfilePhoto(profilePhotoInput);
+      return;
+    }
+  });
+
   document.addEventListener('submit', async (e) => {
     const profileForm = e.target.closest('[data-account-profile-form]');
     if (profileForm) {
@@ -1703,30 +1916,20 @@ function setupEventListeners() {
       const formData = new FormData(profileForm);
       const selectedTeam = String(formData.get('favorite_team') || '').trim();
       const selectedPlayer = String(formData.get('favorite_player') || '').trim();
-      const allowedPlayers = state.accountPlayers.filter(player => player.team === selectedTeam).map(player => player.name);
+      const normalizedSelectedTeam = selectedTeam.toLowerCase();
+      const allowedPlayers = state.accountPlayers
+        .filter(player => {
+          const playerTeam = String(player.team || '').trim().toLowerCase();
+          return playerTeam === normalizedSelectedTeam || (normalizedSelectedTeam === 'ladies' && playerTeam === 'women');
+        })
+        .map(player => player.name);
       if (selectedTeam && selectedPlayer && !allowedPlayers.includes(selectedPlayer)) {
         notify('Choose a player from the selected team roster.', 'Invalid favourite player', 'warning');
         return;
       }
       try {
-        let profilePhotoUrl = String(formData.get('profile_photo_url') || '').trim();
-        const photoFile = profileForm.querySelector('[name="profile_photo_file"]')?.files?.[0];
-        if (photoFile) {
-          if (!photoFile.type.startsWith('image/')) {
-            notify('Please select a valid image file.', 'Invalid image', 'warning');
-            return;
-          }
-          const fileData = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = () => reject(new Error('Could not read selected image.'));
-            reader.readAsDataURL(photoFile);
-          });
-          const upload = await uploadUserProfilePhoto(state.userId, photoFile.name, fileData);
-          profilePhotoUrl = upload.imageUrl || upload.url;
-        }
+        const profilePhotoUrl = String(formData.get('profile_photo_url') || '').trim();
         await updateUserProfile(state.userId, {
-          name: String(formData.get('name') || '').trim(),
           profile_photo_url: profilePhotoUrl,
           favorite_team: selectedTeam,
           favorite_player: selectedTeam ? selectedPlayer : ''
@@ -1828,24 +2031,8 @@ function setupEventListeners() {
         }
         try {
           const response = await registerUser(name, email, password);
-          state.user = response.email;
-          state.userId = response.userId;
-          state.subscriptionPaid = response.subscriptionPaid;
-          localStorage.setItem('bh_user', response.email);
-          localStorage.setItem('bh_user_id', response.userId);
-          localStorage.setItem('bh_subscription_paid', String(response.subscriptionPaid));
           state.authMode = 'login';
-          
-          const navLinks = document.getElementById('nav-links');
-          const bellBtn = document.getElementById('notification-bell-btn');
-          if (navLinks) navLinks.classList.remove('nav-auth-hidden');
-          updateCartButtonVisibility();
-          if (bellBtn) bellBtn.style.display = '';
-          
-          window.location.hash = '#/home';
-          await loadNotifications();
-          renderActivePage();
-          await notify(`Welcome to Bravehearts, ${name}! Your account has been created successfully.`, 'Registration successful', 'success');
+          await handleAuthenticatedUser(response, `Welcome to Bravehearts, ${name}! Your account has been created successfully.`);
         } catch (error) {
           notify(error.message || 'Could not create your account. Please try again.', 'Registration failed', 'error');
         }
@@ -1858,23 +2045,7 @@ function setupEventListeners() {
       }
       try {
         const response = await loginUser(email, password);
-        state.user = response.email;
-        state.userId = response.userId;
-        state.subscriptionPaid = response.subscriptionStatus === 'active';
-        localStorage.setItem('bh_user', response.email);
-        localStorage.setItem('bh_user_id', response.userId);
-        localStorage.setItem('bh_subscription_paid', String(state.subscriptionPaid));
-        
-        const navLinks = document.getElementById('nav-links');
-        const bellBtn = document.getElementById('notification-bell-btn');
-        if (navLinks) navLinks.classList.remove('nav-auth-hidden');
-        updateCartButtonVisibility();
-        if (bellBtn) bellBtn.style.display = '';
-        
-        window.location.hash = '#/home';
-        await loadNotifications();
-        renderActivePage();
-        await notify(`Welcome back${response.name ? `, ${response.name}` : ''}! You have logged in successfully.`, 'Login successful', 'success');
+        await handleAuthenticatedUser(response, `Welcome back${response.name ? `, ${response.name}` : ''}! You have logged in successfully.`);
       } catch (error) {
         notify(error.message || 'Invalid email or password. Please check your details and try again.', 'Login failed', 'error');
       }
@@ -1942,9 +2113,9 @@ async function checkoutWithMobileMoney() {
     state.cartOpen = true;
     updateCartView();
 
-    notify(`Use ${state.mobileMoneyMethod} to pay:\n${state.mobileMoneyMethod === 'Airtel Money' ? 'Airtel Money paybill: 23242' : 'TNM Mpamba paybill: 12345'}\nBusiness Name: Bravehearts\nReference: ${order.reference}\n\nAfter payment, press Confirm Payment in the cart.`, 'Payment instructions', 'info');
+    notify(`Use ${state.mobileMoneyMethod} to pay:\n${state.mobileMoneyMethod === 'Airtel Money' ? 'Airtel Money paybill: 23242' : 'TNM Mpamba paybill: 12345'}\nBusiness Name: Bravehearts\nReference: ${order.reference}\n\nAfter payment, press I Have Paid. An admin will verify your payment before the order is marked paid.`, 'Payment instructions', 'info');
   } catch (error) {
-    alert(error.message);
+    await notify(error.message, 'Unable to create order', 'error');
   }
 }
 
@@ -1955,24 +2126,19 @@ async function confirmMobileMoneyPayment() {
   }
 
   try {
-    const hadSubscriptionItem = state.cart.some(item => isSubscriptionProduct(item));
     await confirmPayment(state.activeOrderId);
-    if (hadSubscriptionItem) {
-      state.subscriptionPaid = true;
-      localStorage.setItem('bh_subscription_paid', 'true');
-    }
     state.cart = [];
     state.cartOpen = false;
     state.mobileMoneyMethod = null;
     state.activeOrderId = null;
     state.activeOrderReference = null;
-    notify('Payment confirmed! Order marked as PAID.', 'Payment confirmed', 'success');
+    notify('Payment submitted. An admin will verify it shortly.', 'Payment submitted', 'success');
     updateCartView();
     if (state.userId) {
       await loadNotifications();
     }
   } catch (error) {
-    alert(error.message);
+    await notify(error.message, 'Unable to confirm payment', 'error');
   }
 }
 

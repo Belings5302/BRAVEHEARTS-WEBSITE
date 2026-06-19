@@ -17,6 +17,7 @@ export function renderOrdersList(orders = [], currentFilter = 'all') {
       <!-- Filters -->
       <div class="filters-bar" style="margin-bottom: 24px; display: flex; gap: 12px; flex-wrap: wrap;">
         <button class="filter-btn ${currentFilter === 'all' ? 'filter-btn-active' : ''}" data-filter="all">All Orders</button>
+        <button class="filter-btn ${currentFilter === 'awaiting_verification' ? 'filter-btn-active' : ''}" data-filter="awaiting_verification">Awaiting Verification</button>
         <button class="filter-btn ${currentFilter === 'paid' ? 'filter-btn-active' : ''}" data-filter="paid">Paid</button>
         <button class="filter-btn ${currentFilter === 'pending' ? 'filter-btn-active' : ''}" data-filter="pending">Pending</button>
         <button class="filter-btn ${currentFilter === 'shipped' ? 'filter-btn-active' : ''}" data-filter="shipped">Shipped</button>
@@ -114,12 +115,20 @@ export function renderOrderDetail(order) {
               <span class="status-badge status-${status}">${status.toUpperCase()}</span>
               <select id="status-select" class="form-input" style="flex: 1; max-width: 150px;">
                 <option value="pending" ${status === 'pending' ? 'selected' : ''}>Pending</option>
+                <option value="awaiting_verification" ${status === 'awaiting_verification' ? 'selected' : ''}>Awaiting Verification</option>
                 <option value="paid" ${status === 'paid' ? 'selected' : ''}>Paid</option>
+                <option value="rejected" ${status === 'rejected' ? 'selected' : ''}>Rejected</option>
                 <option value="shipped" ${status === 'shipped' ? 'selected' : ''}>Shipped</option>
                 <option value="cancelled" ${status === 'cancelled' ? 'selected' : ''}>Cancelled</option>
               </select>
               <button id="update-status-btn" class="btn btn-primary btn-sm">Update</button>
             </div>
+            ${status === 'awaiting_verification' ? `
+              <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;">
+                <button id="confirm-payment-btn" class="btn btn-primary btn-sm" type="button">Confirm Payment</button>
+                <button id="reject-payment-btn" class="btn btn-secondary btn-sm" type="button">Reject Payment</button>
+              </div>
+            ` : ''}
           </div>
           <div class="info-row">
             <label>Total Amount</label>

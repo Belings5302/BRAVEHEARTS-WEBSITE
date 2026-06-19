@@ -20,24 +20,25 @@ import {
   fetchNews,
   fetchPolls,
   fetchGallery,
-  fetchStandings,
   fetchNotifications
 } from './api.js';
 
-import { 
-  adminLogin, 
-  adminLogout, 
-  fetchDashboardStats, 
-  fetchRecentOrders, 
-  fetchAllOrders, 
-  fetchOrderDetail, 
-  updateOrderStatus, 
-  fetchAllProducts, 
-  createProduct, 
-  updateProduct, 
+import {
+  adminLogin,
+  adminLogout,
+  fetchDashboardStats,
+  fetchRecentOrders,
+  fetchAllOrders,
+  fetchOrderDetail,
+  verifyOrderPayment,
+  updateOrderStatus,
+  fetchAllProducts,
+  createProduct,
+  updateProduct,
   deleteProduct,
   fetchAllUsers,
   fetchUserDetail,
+  deleteUser,
   updateUserSubscription,
   fetchRevenueTrend,
   fetchPaymentMethods,
@@ -62,9 +63,10 @@ import {
   deleteNews,
   createGalleryItem,
   deleteGalleryItem,
-  createStandingsEntry,
-  updateStandingsEntry,
-  deleteStandingsEntry,
+  fetchAdminStandings,
+  createStandingsEntry, 
+  updateStandingsEntry, 
+  deleteStandingsEntry, 
   clearStandingsTable,
   importStandingsFile,
   createPoll,
@@ -77,7 +79,7 @@ import {
 } from './admin-api.js';
 
 
-function showAdminDialog({ title = 'Notice', message = '', type = 'info', confirmText = 'OK', cancelText = null } = {}) {
+function showAdminDialog({ title = 'Notice', message = '', type = 'info', confirmText = 'OK', cancelText = null, input = null } = {}) {
   return new Promise(resolve => {
     const existing = document.querySelector('.app-dialog-backdrop');
     if (existing) existing.remove();
@@ -89,6 +91,7 @@ function showAdminDialog({ title = 'Notice', message = '', type = 'info', confir
       <div class="app-dialog-card glass" role="dialog" aria-modal="true">
         <h3><i data-lucide="${icon}" style="width:20px;height:20px;vertical-align:middle;margin-right:8px;color:var(--color-accent);"></i>${title}</h3>
         <p>${message}</p>
+        ${input ? `<input class="login-input app-dialog-input" data-dialog-input type="${input.type || 'text'}" placeholder="${input.placeholder || ''}" style="width:100%;margin-top:14px;" />` : ''}
         <div class="app-dialog-actions">
           ${cancelText ? `<button class="btn btn-secondary" data-dialog-cancel>${cancelText}</button>` : ''}
           <button class="btn btn-primary" data-dialog-confirm>${confirmText}</button>
@@ -99,8 +102,10 @@ function showAdminDialog({ title = 'Notice', message = '', type = 'info', confir
     if (window.lucide) window.lucide.createIcons();
 
     const close = value => {
+      const field = backdrop.querySelector('[data-dialog-input]');
+      const result = input && value ? field?.value?.trim() : value;
       backdrop.remove();
-      resolve(value);
+      resolve(result);
     };
     backdrop.querySelector('[data-dialog-confirm]')?.addEventListener('click', () => close(true));
     backdrop.querySelector('[data-dialog-cancel]')?.addEventListener('click', () => close(false));
@@ -214,13 +219,13 @@ async function initAdminApp() {
   `;
 
   applyTheme();
-  
+
   // Parse hash route
   const hash = window.location.hash || '#/admin/dashboard';
   const parts = hash.split('/').filter(p => p && p !== '#');
   let viewPath = 'dashboard';
   let subPath = null;
-  
+
   // Extract view and ID from URL
   if (parts[0] === 'admin' && parts[1]) {
     viewPath = parts[1];
@@ -338,7 +343,7 @@ async function initAdminApp() {
   // Setup event listeners
   document.getElementById('admin-logout-btn')?.addEventListener('click', handleLogout);
   document.getElementById('admin-theme-toggle-btn')?.addEventListener('click', toggleAdminTheme);
-  
+
   const menuToggle = document.getElementById('admin-menu-toggle');
   const navContainer = document.getElementById('admin-nav-container');
 
@@ -356,7 +361,7 @@ async function initAdminApp() {
       e.preventDefault();
       const view = e.target.closest('[data-view]').dataset.view;
       window.location.hash = `#/admin/${view}`;
-      
+
       // Close mobile menu on navigation
       navContainer?.classList.remove('open');
       if (menuToggle) {
@@ -409,14 +414,27 @@ async function loadDashboard() {
           try {
             await exportReport(adminState.sessionId, type);
           } catch (error) {
-            alert(error.message);
+            await adminNotify(error.message);
           }
         });
       });
     }
   } catch (error) {
     console.error('Failed to load dashboard:', error);
-    alert('Failed to load dashboard. Please try again.');
+    const message = error?.message || 'Failed to load dashboard. Please try again.';
+    if (message.toLowerCase().includes('authentication required') || message.includes('401')) {
+      localStorage.removeItem('admin_session_id');
+      localStorage.removeItem('admin_email');
+      localStorage.removeItem('admin_role');
+      adminState.sessionId = null;
+      adminState.adminEmail = null;
+      adminState.adminRole = null;
+      await adminNotify('Your admin session has expired or is no longer valid. Please log in again.', 'Login required', 'warning');
+      window.location.hash = '#/admin-login';
+      await initAdminApp();
+      return;
+    }
+    await adminNotify('Failed to load dashboard. Please try again.');
   }
 }
 
@@ -441,7 +459,7 @@ async function loadOrders() {
           try {
             await exportReport(adminState.sessionId, type);
           } catch (error) {
-            alert(error.message);
+            await adminNotify(error.message);
           }
         });
       });
@@ -465,7 +483,7 @@ async function loadOrders() {
     }
   } catch (error) {
     console.error('Failed to load orders:', error);
-    alert('Failed to load orders. Please try again.');
+    await adminNotify('Failed to load orders. Please try again.');
   }
 }
 
@@ -474,7 +492,7 @@ async function loadOrderDetail(orderId) {
   try {
     const response = await fetchOrderDetail(adminState.sessionId, orderId);
     const mainContent = document.getElementById('main-content');
-    
+
     if (mainContent) {
       mainContent.innerHTML = renderOrderDetail(response.order);
       if (window.lucide) {
@@ -491,16 +509,16 @@ async function loadOrderDetail(orderId) {
         const newStatus = document.getElementById('status-select').value;
         try {
           await updateOrderStatus(adminState.sessionId, orderId, newStatus);
-          alert('Order status updated successfully!');
+          await adminNotify('Order status updated successfully!');
           await loadOrderDetail(orderId);
         } catch (error) {
-          alert(error.message);
+          await adminNotify(error.message);
         }
       });
     }
   } catch (error) {
     console.error('Failed to load order detail:', error);
-    alert('Failed to load order. Please try again.');
+    await adminNotify('Failed to load order. Please try again.');
   }
 }
 
@@ -534,13 +552,13 @@ async function loadProducts() {
       document.querySelectorAll('.delete-product-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
           const productId = e.target.closest('[data-product-id]').dataset.productId;
-          if (confirm('Are you sure you want to delete this product?')) {
+          if (await adminAsk('Are you sure you want to delete this product?')) {
             try {
               await deleteProduct(adminState.sessionId, productId);
-              alert('Product deleted successfully!');
+              await adminNotify('Product deleted successfully!');
               await loadProducts();
             } catch (error) {
-              alert(error.message);
+              await adminNotify(error.message);
             }
           }
         });
@@ -548,7 +566,7 @@ async function loadProducts() {
     }
   } catch (error) {
     console.error('Failed to load products:', error);
-    alert('Failed to load products. Please try again.');
+    await adminNotify('Failed to load products. Please try again.');
   }
 }
 
@@ -558,7 +576,7 @@ async function loadProductForm(productId) {
     if (productId && productId !== 'new') {
       product = adminState.allProducts.find(p => p.id === productId);
       if (!product) {
-        alert('Product not found.');
+        await adminNotify('Product not found.');
         window.location.hash = '#/admin/products';
         return;
       }
@@ -586,9 +604,9 @@ async function loadProductForm(productId) {
             const base64Data = reader.result.split(',')[1];
             const response = await uploadImage(adminState.sessionId, file.name, base64Data);
             document.getElementById('product-image-url').value = response.url;
-            alert('Image uploaded successfully!');
+            await adminNotify('Image uploaded successfully!');
           } catch (error) {
-            alert('Upload failed: ' + error.message);
+            await adminNotify('Upload failed: ' + error.message);
           }
         };
         reader.readAsDataURL(file);
@@ -613,14 +631,14 @@ async function loadProductForm(productId) {
         try {
           if (product) {
             await updateProduct(adminState.sessionId, product.id, formData);
-            alert('Product updated successfully!');
+            await adminNotify('Product updated successfully!');
           } else {
             await createProduct(adminState.sessionId, formData);
-            alert('Product created successfully!');
+            await adminNotify('Product created successfully!');
           }
           window.location.hash = '#/admin/products';
         } catch (error) {
-          alert(error.message);
+          await adminNotify(error.message);
         }
       });
 
@@ -636,7 +654,7 @@ async function loadProductForm(productId) {
     }
   } catch (error) {
     console.error('Failed to load product form:', error);
-    alert('Failed to load product form. Please try again.');
+    await adminNotify('Failed to load product form. Please try again.');
   }
 }
 
@@ -661,7 +679,7 @@ async function loadUsers() {
           try {
             await exportReport(adminState.sessionId, type);
           } catch (error) {
-            alert(error.message);
+            await adminNotify(error.message);
           }
         });
       });
@@ -674,19 +692,34 @@ async function loadUsers() {
         });
       });
 
+      document.querySelectorAll('.delete-user-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const userId = e.target.closest('[data-user-id]').dataset.userId;
+          const confirmed = await adminAsk('Delete this user from active accounts? Their name/email/login will be anonymized, but historical orders, payments, polls, and logs will remain for reporting.', 'Delete user');
+          if (!confirmed) return;
+          try {
+            await deleteUser(adminState.sessionId, userId);
+            await adminNotify('User deleted from active accounts. Historical records were preserved.', 'User deleted', 'success');
+            await loadUsers();
+          } catch (error) {
+            await adminNotify(error.message, 'Unable to delete user', 'error');
+          }
+        });
+      });
+
       // Setup toggle ban buttons
       document.querySelectorAll('.toggle-ban-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
           const userId = e.target.dataset.userId;
           const isBanned = e.target.dataset.isBanned === 'true';
           const actionText = isBanned ? 'unban' : 'ban';
-          if (confirm(`Are you sure you want to ${actionText} this user?`)) {
+          if (await adminAsk(`Are you sure you want to ${actionText} this user?`)) {
             try {
               await banUser(adminState.sessionId, userId, !isBanned);
-              alert(`User ${isBanned ? 'unbanned' : 'banned'} successfully!`);
+              await adminNotify(`User ${isBanned ? 'unbanned' : 'banned'} successfully!`);
               await loadUsers();
             } catch (error) {
-              alert(error.message);
+              await adminNotify(error.message);
             }
           }
         });
@@ -694,7 +727,7 @@ async function loadUsers() {
     }
   } catch (error) {
     console.error('Failed to load users:', error);
-    alert('Failed to load users. Please try again.');
+    await adminNotify('Failed to load users. Please try again.');
   }
 }
 
@@ -719,10 +752,34 @@ async function loadUserDetail(userId) {
         const newStatus = document.getElementById('subscription-select').value;
         try {
           await updateUserSubscription(adminState.sessionId, userId, newStatus);
-          alert('Subscription updated successfully!');
+          await adminNotify('Subscription updated successfully!');
           await loadUserDetail(userId);
         } catch (error) {
-          alert(error.message);
+          await adminNotify(error.message);
+        }
+      });
+
+      document.getElementById('confirm-payment-btn')?.addEventListener('click', async () => {
+        const confirmed = await adminAsk('Confirm this payment and mark the order as paid?', 'Confirm payment');
+        if (!confirmed) return;
+        try {
+          await verifyOrderPayment(adminState.sessionId, userId, 'confirm');
+          await adminNotify('Payment confirmed and order marked paid.', 'Payment verified', 'success');
+          await loadOrderDetail(userId);
+        } catch (error) {
+          await adminNotify(error.message, 'Unable to verify payment', 'error');
+        }
+      });
+
+      document.getElementById('reject-payment-btn')?.addEventListener('click', async () => {
+        const reason = await showAdminDialog({ title: 'Reject payment', message: 'Optional: enter a reason for rejection.', type: 'warning', confirmText: 'Reject Payment', cancelText: 'Cancel', input: { type: 'text', placeholder: 'Reason' } });
+        if (reason === false) return;
+        try {
+          await verifyOrderPayment(adminState.sessionId, userId, 'reject', reason || '');
+          await adminNotify('Payment rejected.', 'Payment rejected', 'success');
+          await loadOrderDetail(userId);
+        } catch (error) {
+          await adminNotify(error.message, 'Unable to reject payment', 'error');
         }
       });
 
@@ -731,20 +788,20 @@ async function loadUserDetail(userId) {
         const userId = e.target.dataset.userId;
         const isBanned = e.target.dataset.isBanned === 'true';
         const actionText = isBanned ? 'unban' : 'ban';
-        if (confirm(`Are you sure you want to ${actionText} this user?`)) {
+        if (await adminAsk(`Are you sure you want to ${actionText} this user?`)) {
           try {
             await banUser(adminState.sessionId, userId, !isBanned);
-            alert(`User ${isBanned ? 'unbanned' : 'banned'} successfully!`);
+            await adminNotify(`User ${isBanned ? 'unbanned' : 'banned'} successfully!`);
             await loadUserDetail(userId);
           } catch (error) {
-            alert(error.message);
+            await adminNotify(error.message);
           }
         }
       });
     }
   } catch (error) {
     console.error('Failed to load user detail:', error);
-    alert('Failed to load user details. Please try again.');
+    await adminNotify('Failed to load user details. Please try again.');
   }
 }
 
@@ -774,7 +831,7 @@ async function loadAnalytics() {
     }
   } catch (error) {
     console.error('Failed to load analytics:', error);
-    alert('Failed to load analytics. Please try again.');
+    await adminNotify('Failed to load analytics. Please try again.');
   }
 }
 
@@ -786,10 +843,10 @@ async function loadSchedules() {
 
     const mainContent = document.getElementById('main-content');
     if (mainContent) {
-      const filteredGames = adminState.selectedGameStatus === 'all' 
-        ? adminState.allGames 
+      const filteredGames = adminState.selectedGameStatus === 'all'
+        ? adminState.allGames
         : adminState.allGames.filter(g => g.status === adminState.selectedGameStatus);
-      
+
       mainContent.innerHTML = renderSchedulesList(filteredGames, adminState.selectedGameStatus);
       if (window.lucide) {
         window.lucide.createIcons();
@@ -802,7 +859,7 @@ async function loadSchedules() {
           try {
             await exportReport(adminState.sessionId, type);
           } catch (error) {
-            alert(error.message);
+            await adminNotify(error.message);
           }
         });
       });
@@ -831,12 +888,12 @@ async function loadSchedules() {
       document.querySelectorAll('.delete-game-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
           const gameId = e.target.closest('[data-game-id]').dataset.gameId;
-          if (confirm('Are you sure you want to delete this game?')) {
+          if (await adminAsk('Are you sure you want to delete this game?')) {
             try {
               await deleteGame(adminState.sessionId, gameId);
               await loadSchedules();
             } catch (error) {
-              alert(error.message);
+              await adminNotify(error.message);
             }
           }
         });
@@ -852,7 +909,7 @@ async function loadSchedules() {
     }
   } catch (error) {
     console.error('Failed to load schedules:', error);
-    alert('Failed to load schedules. Please try again.');
+    await adminNotify('Failed to load schedules. Please try again.');
   }
 }
 
@@ -901,14 +958,14 @@ async function loadScheduleForm(gameId) {
               const base64Data = String(reader.result).split(',')[1] || reader.result;
               const response = await uploadImage(adminState.sessionId, file.name, base64Data);
               document.getElementById('game-opponent-logo-url').value = response.imageUrl || response.url;
-              alert('Opponent logo uploaded successfully! Save the game to publish it.');
+              await adminNotify('Opponent logo uploaded successfully! Save the game to publish it.');
             } catch (error) {
-              alert(`Upload failed: ${error.message}`);
+              await adminNotify(`Upload failed: ${error.message}`);
             }
           };
           reader.readAsDataURL(file);
         } catch (error) {
-          alert(`Upload failed: ${error.message}`);
+          await adminNotify(`Upload failed: ${error.message}`);
         }
       });
 
@@ -944,13 +1001,13 @@ async function loadScheduleForm(gameId) {
           }
           window.location.hash = '#/admin/schedules';
         } catch (error) {
-          alert(error.message);
+          await adminNotify(error.message);
         }
       });
     }
   } catch (error) {
     console.error('Failed to load schedule form:', error);
-    alert('Failed to load schedule form. Please try again.');
+    await adminNotify('Failed to load schedule form. Please try again.');
   }
 }
 
@@ -995,7 +1052,7 @@ async function loadGameStats(gameId) {
     }
   } catch (error) {
     console.error('Failed to load game stats:', error);
-    alert('Failed to load game stats. Please try again.');
+    await adminNotify('Failed to load game stats. Please try again.');
   }
 }
 
@@ -1052,7 +1109,7 @@ function setupGameStatsListeners(gameId) {
       const selectedValue = selectElement.value;
 
       if (!selectedValue) {
-        alert('Please select a player.');
+        await adminNotify('Please select a player.');
         return;
       }
 
@@ -1064,7 +1121,7 @@ function setupGameStatsListeners(gameId) {
         modal.remove();
         await loadGameStats(gameId);
       } catch (error) {
-        alert(error.message);
+        await adminNotify(error.message);
       }
     });
   });
@@ -1118,7 +1175,7 @@ function setupGameStatsListeners(gameId) {
         await updatePlayerStat(adminState.sessionId, statId, updateData);
       } catch (error) {
         console.error('Failed to update stat:', error);
-        alert('Failed to save stat. Please try again.');
+        await adminNotify('Failed to save stat. Please try again.');
       }
     };
 
@@ -1169,12 +1226,12 @@ function setupGameStatsListeners(gameId) {
   document.querySelectorAll('.delete-player-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       const statId = e.target.closest('[data-player-id]').dataset.playerId;
-      if (confirm('Remove this player?')) {
+      if (await adminAsk('Remove this player?')) {
         try {
           await deletePlayerStat(adminState.sessionId, statId);
           await loadGameStats(gameId);
         } catch (error) {
-          alert(error.message);
+          await adminNotify(error.message);
         }
       }
     });
@@ -1194,10 +1251,10 @@ function setupGameStatsListeners(gameId) {
         status: 'result',
         outcome
       });
-      alert('Game stats saved successfully!');
+      await adminNotify('Game stats saved successfully!');
       window.location.hash = '#/admin/schedules';
     } catch (error) {
-      alert(error.message);
+      await adminNotify(error.message);
     }
   });
 
@@ -1228,7 +1285,7 @@ async function loadRosters() {
   try {
     const response = await fetchAllPlayers(adminState.sessionId);
     adminState.allPlayers = response.players || [];
-    
+
     // Apply current filter
     let displayedPlayers = adminState.allPlayers;
     if (adminState.selectedTeamFilter !== 'all') {
@@ -1263,12 +1320,12 @@ async function loadRosters() {
     document.querySelectorAll('.delete-player-btn').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         const id = e.target.dataset.id;
-        if (confirm('Are you sure you want to delete this player?')) {
+        if (await adminAsk('Are you sure you want to delete this player?')) {
           try {
             await deletePlayer(adminState.sessionId, id);
             await loadRosters();
           } catch (error) {
-            alert(error.message);
+            await adminNotify(error.message);
           }
         }
       });
@@ -1314,9 +1371,9 @@ async function loadPlayerForm(playerId) {
         const base64Data = reader.result.split(',')[1];
         const response = await uploadImage(adminState.sessionId, file.name, base64Data);
         document.getElementById('player-image-url').value = response.url;
-        alert('Photo uploaded successfully!');
+        await adminNotify('Photo uploaded successfully!');
       } catch (error) {
-        alert('Upload failed: ' + error.message);
+        await adminNotify('Upload failed: ' + error.message);
       }
     };
     reader.readAsDataURL(file);
@@ -1354,7 +1411,7 @@ async function loadPlayerForm(playerId) {
       }
       window.location.hash = '#/admin/rosters';
     } catch (error) {
-      alert(error.message);
+      await adminNotify(error.message);
     }
   });
 }
@@ -1366,7 +1423,7 @@ async function loadNews(activeSubView = 'articles', editingArticle = null) {
       fetchNews(),
       fetchPolls()
     ]);
-    
+
     const articles = newsResponse.news || [];
     const polls = pollsResponse.polls || [];
 
@@ -1399,14 +1456,14 @@ async function loadNews(activeSubView = 'articles', editingArticle = null) {
           try {
             if (editingArticle) {
               await updateNews(adminState.sessionId, editingArticle.id, articleData);
-              alert('Article updated successfully!');
+              await adminNotify('Article updated successfully!');
             } else {
               await createNews(adminState.sessionId, articleData);
-              alert('Article published successfully!');
+              await adminNotify('Article published successfully!');
             }
             loadNews('articles');
           } catch (error) {
-            alert(error.message);
+            await adminNotify(error.message);
           }
         });
 
@@ -1430,13 +1487,13 @@ async function loadNews(activeSubView = 'articles', editingArticle = null) {
         document.querySelectorAll('.delete-article-btn').forEach(btn => {
           btn.addEventListener('click', async (e) => {
             const id = e.target.dataset.id;
-            if (confirm('Are you sure you want to delete this article?')) {
+            if (await adminAsk('Are you sure you want to delete this article?')) {
               try {
                 await deleteNews(adminState.sessionId, id);
-                alert('Article deleted successfully!');
+                await adminNotify('Article deleted successfully!');
                 loadNews('articles');
               } catch (error) {
-                alert(error.message);
+                await adminNotify(error.message);
               }
             }
           });
@@ -1457,9 +1514,9 @@ async function loadNews(activeSubView = 'articles', editingArticle = null) {
               const base64Data = reader.result.split(',')[1];
               const response = await uploadImage(adminState.sessionId, file.name, base64Data);
               document.getElementById('article-image').value = response.url;
-              alert('Image uploaded successfully!');
+              await adminNotify('Image uploaded successfully!');
             } catch (error) {
-              alert('Upload failed: ' + error.message);
+              await adminNotify('Upload failed: ' + error.message);
             }
           };
           reader.readAsDataURL(file);
@@ -1476,16 +1533,16 @@ async function loadNews(activeSubView = 'articles', editingArticle = null) {
             .filter(val => val !== '');
 
           if (options.length < 2) {
-            alert('Please provide at least 2 options.');
+            await adminNotify('Please provide at least 2 options.');
             return;
           }
 
           try {
             await createPoll(adminState.sessionId, { question, options });
-            alert('Poll published successfully!');
+            await adminNotify('Poll published successfully!');
             loadNews('polls');
           } catch (error) {
-            alert(error.message);
+            await adminNotify(error.message);
           }
         });
 
@@ -1509,10 +1566,10 @@ async function loadNews(activeSubView = 'articles', editingArticle = null) {
             const newStatus = currentStatus === 'active' ? 'closed' : 'active';
             try {
               await updatePollStatus(adminState.sessionId, id, newStatus);
-              alert(`Poll status updated to ${newStatus}`);
+              await adminNotify(`Poll status updated to ${newStatus}`);
               loadNews('polls');
             } catch (error) {
-              alert(error.message);
+              await adminNotify(error.message);
             }
           });
         });
@@ -1521,13 +1578,13 @@ async function loadNews(activeSubView = 'articles', editingArticle = null) {
         document.querySelectorAll('.delete-poll-btn').forEach(btn => {
           btn.addEventListener('click', async (e) => {
             const id = e.target.dataset.id;
-            if (confirm('Are you sure you want to delete this poll?')) {
+            if (await adminAsk('Are you sure you want to delete this poll?')) {
               try {
                 await deletePoll(adminState.sessionId, id);
-                alert('Poll deleted successfully!');
+                await adminNotify('Poll deleted successfully!');
                 loadNews('polls');
               } catch (error) {
-                alert(error.message);
+                await adminNotify(error.message);
               }
             }
           });
@@ -1536,14 +1593,14 @@ async function loadNews(activeSubView = 'articles', editingArticle = null) {
     }
   } catch (error) {
     console.error('Failed to load news:', error);
-    alert('Failed to load news/polls management.');
+    await adminNotify('Failed to load news/polls management.');
   }
 }
 
 async function loadStandings(editingStanding = null) {
   try {
     const isSuperAdmin = adminState.adminRole === 'super-admin';
-    const response = await fetchStandings();
+    const response = await fetchAdminStandings(adminState.sessionId);
     const allStandings = response.standings || [];
     const selectedCategory = adminState.selectedStandingCategory;
     const selectedSeason = adminState.selectedStandingSeason;
@@ -1764,10 +1821,10 @@ async function loadGallery() {
 
         try {
           await createGalleryItem(adminState.sessionId, { title, media_type: mediaType, media_url: mediaUrl });
-          alert('Media item added to gallery!');
+          await adminNotify('Media item added to gallery!');
           loadGallery();
         } catch (error) {
-          alert(error.message);
+          await adminNotify(error.message);
         }
       });
 
@@ -1775,13 +1832,13 @@ async function loadGallery() {
       document.querySelectorAll('.delete-gallery-item-btn').forEach(btn => {
         btn.addEventListener('click', async (e) => {
           const id = e.target.dataset.id;
-          if (confirm('Are you sure you want to delete this gallery item?')) {
+          if (await adminAsk('Are you sure you want to delete this gallery item?')) {
             try {
               await deleteGalleryItem(adminState.sessionId, id);
-              alert('Media item deleted!');
+              await adminNotify('Media item deleted!');
               loadGallery();
             } catch (error) {
-              alert(error.message);
+              await adminNotify(error.message);
             }
           }
         });
@@ -1790,7 +1847,7 @@ async function loadGallery() {
       // Image upload for gallery
       const fileInput = document.getElementById('gallery-image-file');
       const uploadBtn = document.getElementById('upload-gallery-image-btn');
-      
+
       // Hide upload button if type is video
       const typeSelect = document.getElementById('gallery-type');
       typeSelect?.addEventListener('change', () => {
@@ -1813,9 +1870,9 @@ async function loadGallery() {
             const base64Data = reader.result.split(',')[1];
             const response = await uploadImage(adminState.sessionId, file.name, base64Data);
             document.getElementById('gallery-url').value = response.url;
-            alert('Image uploaded successfully!');
+            await adminNotify('Image uploaded successfully!');
           } catch (error) {
-            alert('Upload failed: ' + error.message);
+            await adminNotify('Upload failed: ' + error.message);
           }
         };
         reader.readAsDataURL(file);
@@ -1823,7 +1880,7 @@ async function loadGallery() {
     }
   } catch (error) {
     console.error('Failed to load gallery:', error);
-    alert('Failed to load gallery manager.');
+    await adminNotify('Failed to load gallery manager.');
   }
 }
 
@@ -1860,16 +1917,16 @@ async function loadNotifications() {
 
         try {
           await createNotification(adminState.sessionId, notifData);
-          alert('Announcement broadcast successfully!');
+          await adminNotify('Announcement broadcast successfully!');
           loadNotifications();
         } catch (error) {
-          alert(error.message);
+          await adminNotify(error.message);
         }
       });
     }
   } catch (error) {
     console.error('Failed to load notifications:', error);
-    alert('Failed to load notifications manager.');
+    await adminNotify('Failed to load notifications manager.');
   }
 }
 
@@ -1886,44 +1943,44 @@ function setupLoginListeners() {
 
       if (mode === 'forgot') {
         if (!email) {
-          alert('Please enter your email address.');
+          await adminNotify('Please enter your email address.');
           return;
         }
         try {
           await adminForgotPassword(email);
-          alert('If an admin account with that email exists, a password reset link has been generated. Please check your inbox.');
+          await adminNotify('If an admin account with that email exists, a password reset link has been generated. Please check your inbox.');
           adminState.authMode = 'login';
           window.location.hash = '#/admin-login';
           initAdminApp();
         } catch (error) {
-          alert(error.message);
+          await adminNotify(error.message);
         }
         return;
       }
 
       if (mode === 'reset') {
         if (!resetToken) {
-          alert('Missing reset token.');
+          await adminNotify('Missing reset token.');
           return;
         }
         if (!newPassword || newPassword.length < 6) {
-          alert('Password must be at least 6 characters.');
+          await adminNotify('Password must be at least 6 characters.');
           return;
         }
         try {
           await adminResetPassword(resetToken, newPassword);
-          alert('Password reset successful! You can now log in with your new password.');
+          await adminNotify('Password reset successful! You can now log in with your new password.');
           adminState.authMode = 'login';
           window.location.hash = '#/admin-login';
           initAdminApp();
         } catch (error) {
-          alert(error.message);
+          await adminNotify(error.message);
         }
         return;
       }
 
       if (!email || !password) {
-        alert('Please enter both email and password.');
+        await adminNotify('Please enter both email and password.');
         return;
       }
 
@@ -1940,7 +1997,7 @@ function setupLoginListeners() {
         window.location.hash = '#/admin/dashboard';
         initAdminApp();
       } catch (error) {
-        alert(error.message);
+        await adminNotify(error.message);
       }
     }
   });

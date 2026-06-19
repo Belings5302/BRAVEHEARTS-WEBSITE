@@ -8,11 +8,25 @@ async function handleResponse(response) {
   return data;
 }
 
+export async function fetchPublicConfig() {
+  const response = await fetch(`${API_BASE}/config`);
+  return handleResponse(response);
+}
+
 export async function registerUser(name, email, password) {
   const response = await fetch(`${API_BASE}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, email, password })
+  });
+  return handleResponse(response);
+}
+
+export async function loginWithGoogle(credential) {
+  const response = await fetch(`${API_BASE}/auth/google`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ credential })
   });
   return handleResponse(response);
 }
@@ -33,7 +47,7 @@ export async function fetchProducts(search = '') {
 }
 
 export async function createOrder({ userId, items, paymentMethod, mobileMoneyNumber }) {
-  const response = await fetch(`${API_BASE}/cart/checkout`, {
+  const response = await fetch(`${API_BASE}/orders/checkout`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, items, paymentMethod, mobileMoneyNumber })
@@ -41,7 +55,7 @@ export async function createOrder({ userId, items, paymentMethod, mobileMoneyNum
   return handleResponse(response);
 }
 
-export async function confirmPayment(orderId) {
+export async function submitPaymentForVerification(orderId) {
   const response = await fetch(`${API_BASE}/payments/confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -49,6 +63,8 @@ export async function confirmPayment(orderId) {
   });
   return handleResponse(response);
 }
+
+export const confirmPayment = submitPaymentForVerification;
 
 export async function fetchSubscription(userId) {
   const response = await fetch(`${API_BASE}/users/${userId}/subscription`);

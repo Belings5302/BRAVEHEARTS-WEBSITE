@@ -136,7 +136,7 @@ export function renderCartDrawer(cartItems = [], isOpen = false, selectedMobileM
           <p style="margin: 0 0 8px;">${selectedMobileMoney === 'Airtel Money' ? 'Airtel Money Paybill: 23242' : 'TNM Mpamba Paybill: 12345'}</p>
           <p style="margin: 0 0 8px;">Business Name: Bravehearts</p>
           <p style="margin: 0 0 8px;">Reference: use your email address or a unique code like <strong>BH-${Date.now()}</strong></p>
-          <p style="margin: 0; font-size: 0.85rem; color: var(--color-text-muted);">After payment, click Confirm Payment to complete your order.</p>
+          <p style="margin: 0; font-size: 0.85rem; color: var(--color-text-muted);">After payment, click I Have Paid. An admin will verify before your order is marked paid.</p>
         </div>
       ` : ''}
     </div>
@@ -179,7 +179,7 @@ export function renderCartDrawer(cartItems = [], isOpen = false, selectedMobileM
                 Pay with ${selectedMobileMoney}
                 <i data-lucide="credit-card"></i>
               </button>
-              <button class="btn btn-secondary" type="button" data-confirm-mobile-payment="true">Confirm Payment</button>
+              <button class="btn btn-secondary" type="button" data-confirm-mobile-payment="true">I Have Paid</button>
             ` : `
               <p style="font-size: 0.85rem; color: var(--color-text-muted); text-align: center; width: 100%; padding: 8px 0;">
                 <i data-lucide="arrow-up" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; margin-right: 4px;"></i>

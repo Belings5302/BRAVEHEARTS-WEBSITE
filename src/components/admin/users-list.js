@@ -61,6 +61,11 @@ export function renderUsersList(users = [], isSuperAdmin = false) {
                       <button class="btn btn-sm toggle-ban-btn" data-user-id="${user.id}" data-is-banned="${user.is_banned ? 'true' : 'false'}" style="padding: 4px 8px; font-size: 0.8rem; height: 28px; min-height: auto; border: none; cursor: pointer; color: #fff; background: ${user.is_banned ? '#10b981' : '#ef4444'};">
                         ${user.is_banned ? 'Unban' : 'Ban'}
                       </button>
+                      ${isSuperAdmin ? `
+                        <button class="btn-action delete-user-btn" data-user-id="${user.id}" title="Delete/anonymize user">
+                          <i data-lucide="trash-2" style="width: 16px; height: 16px;"></i>
+                        </button>
+                      ` : ''}
                     </div>
                   </td>
                 </tr>

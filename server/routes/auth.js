@@ -1,35 +1,247 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const { OAuth2Client } = require('google-auth-library');
 const { db, hashPassword } = require('../db');
 const { validate, schemas } = require('../middleware/validation');
 const { authRateLimiter } = require('../middleware/security');
 const { asyncHandler } = require('../middleware/errorHandler');
-const { sendPasswordResetEmail } = require('../services/email');
+const { sendPasswordResetEmail, sendWelcomeEmail, sendEmailVerificationEmail } = require('../services/email');
 const path = require('path');
 const fs = require('fs');
+
+let googleClient = null;
+function getGoogleClient() {
+  if (!process.env.GOOGLE_CLIENT_ID) return null;
+  if (!googleClient) {
+    googleClient = new OAuth2Client(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_REDIRECT_URI || `${process.env.PUBLIC_APP_URL || 'http://localhost:3000'}/api/auth/google/callback`
+    );
+  }
+  return googleClient;
+}
+
+function generateOAuthPasswordHash(provider, subject) {
+  return hashPassword(`${provider}:${subject}:${process.env.SESSION_SECRET || 'bravehearts-oauth'}`);
+}
 
 // User registration
 router.post('/register', authRateLimiter, validate(schemas.register), asyncHandler(async (req, res) => {
   const { name, email, password } = req.body;
   const passwordHash = hashPassword(password);
 
-  db.get('SELECT id FROM users WHERE email = ?', [email], (err, existing) => {
+  db.get('SELECT id FROM users WHERE email = ? AND COALESCE(is_deleted, false) = false', [email], (err, existing) => {
     if (err) return res.status(500).json({ error: err.message });
     if (existing) {
       return res.status(400).json({ error: 'A user with that email already exists.' });
     }
 
     const now = new Date().toISOString();
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     db.run(
-      'INSERT INTO users (name, email, password_hash, subscription_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [name, email, passwordHash, 'pending', now, now],
-      function (insertErr) {
+      'INSERT INTO users (name, email, password_hash, subscription_status, email_verified, email_verification_token, email_verification_expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, email, passwordHash, 'pending', false, verificationToken, verificationExpiresAt, now, now],
+      async function (insertErr) {
         if (insertErr) return res.status(500).json({ error: insertErr.message });
-        res.json({ userId: this.lastID, email, name, subscriptionPaid: false });
+        try {
+          await sendEmailVerificationEmail({ to: email, name, token: verificationToken });
+          res.json({ userId: this.lastID, email, name, subscriptionPaid: false, emailVerified: false, message: 'Account created. Please verify your Gmail before logging in.' });
+        } catch (error) {
+          res.status(500).json({ error: 'Account created, but verification email could not be sent. Please contact support.' });
+        }
       }
     );
   });
+}));
+
+function completeGoogleLogin(payload, callback) {
+  if (!payload?.email || !payload?.email_verified) {
+    return callback({ status: 401, message: 'Google account email could not be verified.' });
+  }
+  if (!String(payload.email).toLowerCase().endsWith('@gmail.com')) {
+    return callback({ status: 400, message: 'Please use a Gmail account to continue.' });
+  }
+
+  const email = String(payload.email).toLowerCase();
+  const name = payload.name || email.split('@')[0];
+  const profilePhotoUrl = payload.picture || '';
+  const now = new Date().toISOString();
+
+  db.get('SELECT id, name, email, subscription_status, is_banned FROM users WHERE email = ? AND COALESCE(is_deleted, false) = false', [email], (err, user) => {
+    if (err) return callback({ status: 500, message: err.message });
+    if (user?.is_banned) {
+      return callback({ status: 403, message: 'Your account has been banned. Please contact support at info@bravehearts.mw.' });
+    }
+    if (user) {
+      const updates = [];
+      const params = [];
+      if (profilePhotoUrl) {
+        updates.push('profile_photo_url = ?');
+        params.push(profilePhotoUrl);
+      }
+      updates.push('email_verified = ?', 'updated_at = ?');
+      params.push(true, now, user.id);
+      db.run(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, params, updateErr => {
+        if (updateErr) return callback({ status: 500, message: updateErr.message });
+        callback(null, { userId: user.id, name: user.name || name, email: user.email, subscriptionStatus: user.subscription_status, isNewUser: false });
+      });
+      return;
+    }
+
+    db.run(
+      'INSERT INTO users (name, email, password_hash, subscription_status, profile_photo_url, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, email, generateOAuthPasswordHash('google', payload.sub), 'pending', profilePhotoUrl, true, now, now],
+      function(insertErr) {
+        if (insertErr) return callback({ status: 500, message: insertErr.message });
+        sendWelcomeEmail({ to: email, name }).catch(error => {
+          console.warn('Failed to send welcome email:', error.message);
+        });
+        callback(null, { userId: this.lastID, name, email, subscriptionStatus: 'pending', subscriptionPaid: false, isNewUser: true });
+      }
+    );
+  });
+}
+
+// Google redirect login/register
+router.get('/google/start', authRateLimiter, asyncHandler(async (req, res) => {
+  const client = getGoogleClient();
+  if (!client || !process.env.GOOGLE_CLIENT_SECRET) {
+    return res.status(503).send('Google sign-in is not configured.');
+  }
+  const returnTo = String(req.query.returnTo || '#/home');
+  const state = Buffer.from(JSON.stringify({ returnTo })).toString('base64url');
+  const url = client.generateAuthUrl({
+    access_type: 'offline',
+    scope: ['openid', 'email', 'profile'],
+    prompt: 'select_account',
+    state
+  });
+  res.redirect(url);
+}));
+
+router.get('/google/callback', asyncHandler(async (req, res) => {
+  const client = getGoogleClient();
+  if (!client) return res.status(503).send('Google sign-in is not configured.');
+  const { code, state } = req.query;
+  if (!code) return res.status(400).send('Missing Google authorization code.');
+
+  const { tokens } = await client.getToken(String(code));
+  const ticket = await client.verifyIdToken({
+    idToken: tokens.id_token,
+    audience: process.env.GOOGLE_CLIENT_ID
+  });
+  let returnTo = '#/home';
+  try {
+    if (state) returnTo = JSON.parse(Buffer.from(String(state), 'base64url').toString('utf8')).returnTo || returnTo;
+  } catch (_) {}
+
+  completeGoogleLogin(ticket.getPayload(), (err, user) => {
+    if (err) return res.status(err.status || 500).send(err.message || 'Google sign-in failed.');
+    const redirectUrl = new URL('/', process.env.PUBLIC_APP_URL || 'http://localhost:3000');
+    redirectUrl.searchParams.set('googleLogin', 'success');
+    redirectUrl.searchParams.set('userId', user.userId);
+    redirectUrl.searchParams.set('email', user.email);
+    redirectUrl.searchParams.set('name', user.name || '');
+    redirectUrl.searchParams.set('subscriptionStatus', user.subscriptionStatus || 'pending');
+    redirectUrl.searchParams.set('isNewUser', user.isNewUser ? 'true' : 'false');
+    redirectUrl.hash = returnTo.replace(/^#?/, '#/').replace(/^#\/\//, '#/');
+    res.redirect(redirectUrl.toString());
+  });
+}));
+
+// Google user login/register
+router.post('/google', authRateLimiter, validate(schemas.googleAuth), asyncHandler(async (req, res) => {
+  const client = getGoogleClient();
+  if (!client) {
+    return res.status(503).json({ error: 'Google sign-in is not configured.' });
+  }
+
+  const ticket = await client.verifyIdToken({
+    idToken: req.body.credential,
+    audience: process.env.GOOGLE_CLIENT_ID
+  });
+  const payload = ticket.getPayload();
+  if (!payload?.email || !payload?.email_verified) {
+    return res.status(401).json({ error: 'Google account email could not be verified.' });
+  }
+  if (!String(payload.email).toLowerCase().endsWith('@gmail.com')) {
+    return res.status(400).json({ error: 'Please use a Gmail account to continue.' });
+  }
+
+  const email = String(payload.email).toLowerCase();
+  const name = payload.name || email.split('@')[0];
+  const profilePhotoUrl = payload.picture || '';
+  const now = new Date().toISOString();
+
+  db.get('SELECT id, name, email, subscription_status, is_banned FROM users WHERE email = ? AND COALESCE(is_deleted, false) = false', [email], (err, user) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (user?.is_banned) {
+      return res.status(403).json({ error: 'Your account has been banned. Please contact support at info@bravehearts.mw.' });
+    }
+    if (user) {
+      const updates = [];
+      const params = [];
+      if (profilePhotoUrl) {
+        updates.push('profile_photo_url = ?');
+        params.push(profilePhotoUrl);
+      }
+      updates.push('updated_at = ?');
+      params.push(now, user.id);
+      db.run(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, params, updateErr => {
+        if (updateErr) return res.status(500).json({ error: updateErr.message });
+        res.json({ userId: user.id, name: user.name || name, email: user.email, subscriptionStatus: user.subscription_status, isNewUser: false });
+      });
+      return;
+    }
+
+    db.run(
+      'INSERT INTO users (name, email, password_hash, subscription_status, profile_photo_url, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, email, generateOAuthPasswordHash('google', payload.sub), 'pending', profilePhotoUrl, true, now, now],
+      function(insertErr) {
+        if (insertErr) return res.status(500).json({ error: insertErr.message });
+        sendWelcomeEmail({ to: email, name }).catch(error => {
+          console.warn('Failed to send welcome email:', error.message);
+        });
+        res.json({ userId: this.lastID, name, email, subscriptionStatus: 'pending', subscriptionPaid: false, isNewUser: true });
+      }
+    );
+  });
+}));
+
+router.get('/verify-email', asyncHandler(async (req, res) => {
+  const token = String(req.query.token || '').trim();
+  if (!token) {
+    return res.status(400).send('<h1>Verification failed</h1><p>Missing verification token.</p>');
+  }
+
+  db.get(
+    'SELECT id FROM users WHERE email_verification_token = ? AND email_verification_expires_at > ?',
+    [token, new Date().toISOString()],
+    (err, user) => {
+      if (err) return res.status(500).send('<h1>Verification failed</h1><p>Please try again later.</p>');
+      if (!user) return res.status(400).send('<h1>Verification failed</h1><p>This verification link is invalid or expired.</p>');
+
+      db.run(
+        'UPDATE users SET email_verified = ?, email_verification_token = ?, email_verification_expires_at = ?, updated_at = ? WHERE id = ?',
+        [true, null, null, new Date().toISOString(), user.id],
+        updateErr => {
+          if (updateErr) return res.status(500).send('<h1>Verification failed</h1><p>Please try again later.</p>');
+          res.send(`
+            <main style="min-height:100vh;display:grid;place-items:center;background:#07130d;color:#fff;font-family:Arial,sans-serif;padding:24px;text-align:center;">
+              <section style="max-width:520px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:24px;padding:32px;">
+                <h1 style="color:#34d399;margin-top:0;">Email verified</h1>
+                <p>Your Bravehearts account is now active. You can log in and continue.</p>
+                <a href="/#/login" style="display:inline-block;margin-top:16px;background:#d42027;color:#fff;padding:12px 18px;border-radius:999px;text-decoration:none;font-weight:800;">Go to Login</a>
+              </section>
+            </main>
+          `);
+        }
+      );
+    }
+  );
 }));
 
 // User login
@@ -37,13 +249,16 @@ router.post('/login', authRateLimiter, validate(schemas.login), asyncHandler(asy
   const { email, password } = req.body;
   const passwordHash = hashPassword(password);
 
-  db.get('SELECT id, name, email, subscription_status, is_banned FROM users WHERE email = ? AND password_hash = ?', [email, passwordHash], (err, user) => {
+  db.get('SELECT id, name, email, subscription_status, is_banned, email_verified FROM users WHERE email = ? AND password_hash = ? AND COALESCE(is_deleted, false) = false', [email, passwordHash], (err, user) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
     if (user.is_banned) {
       return res.status(403).json({ error: 'Your account has been banned. Please contact support at info@bravehearts.mw.' });
+    }
+    if (!user.email_verified) {
+      return res.status(403).json({ error: 'Please verify your Gmail before logging in. Check your inbox for the Bravehearts verification link.' });
     }
     res.json({ userId: user.id, name: user.name, email: user.email, subscriptionStatus: user.subscription_status });
   });
@@ -84,7 +299,7 @@ router.get('/:id/profile', asyncHandler(async (req, res) => {
   db.get(
     `SELECT id, name, email, subscription_status, created_at, profile_photo_url, favorite_team, favorite_player,
             notify_game_reminders, notify_live_scores, notify_news, notify_merch
-     FROM users WHERE id = ?`,
+     FROM users WHERE id = ? AND COALESCE(is_deleted, false) = false`,
     [id],
     (err, user) => {
       if (err) return res.status(500).json({ error: err.message });
@@ -135,7 +350,7 @@ router.post('/forgot-password', authRateLimiter, validate(schemas.forgotPassword
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const now = new Date().toISOString();
 
-  db.get('SELECT id FROM users WHERE email = ?', [email], (err, user) => {
+  db.get('SELECT id FROM users WHERE email = ? AND COALESCE(is_deleted, false) = false', [email], (err, user) => {
     if (err) return res.status(500).json({ error: err.message });
 
     db.get('SELECT id FROM admins WHERE email = ?', [email], async (adminErr, admin) => {
@@ -173,14 +388,14 @@ router.post('/reset-password', authRateLimiter, validate(schemas.resetPassword),
   const now = new Date().toISOString();
   const passwordHash = hashPassword(newPassword);
 
-  db.get('SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > ?', [token, now], (err, row) => {
+  db.get('SELECT * FROM password_reset_tokens WHERE token = ? AND used = ? AND expires_at > ?', [token, false, now], (err, row) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!row) {
       return res.status(400).json({ error: 'Invalid or expired reset token.' });
     }
 
     const updatePassword = () => {
-      db.run('UPDATE password_reset_tokens SET used = 1 WHERE id = ?', [row.id], (updateErr) => {
+      db.run('UPDATE password_reset_tokens SET used = ? WHERE id = ?', [true, row.id], (updateErr) => {
         if (updateErr) return res.status(500).json({ error: updateErr.message });
         res.json({ success: true, message: 'Password has been reset successfully.' });
       });

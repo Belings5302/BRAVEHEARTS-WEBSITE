@@ -90,6 +90,15 @@ export async function fetchOrderDetail(sessionId, orderId) {
   return handleResponse(response);
 }
 
+export async function verifyOrderPayment(sessionId, orderId, decision, reason = '') {
+  const response = await fetch(`${ADMIN_API_BASE}/orders/${orderId}/verify-payment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId },
+    body: JSON.stringify({ decision, reason })
+  });
+  return handleResponse(response);
+}
+
 export async function updateOrderStatus(sessionId, orderId, status) {
   const response = await fetch(`${ADMIN_API_BASE}/orders/${orderId}/status`, {
     method: 'PUT',
@@ -148,6 +157,14 @@ export async function fetchAllUsers(sessionId) {
 export async function fetchUserDetail(sessionId, userId) {
   const response = await fetch(`${ADMIN_API_BASE}/users/${userId}`, {
     method: 'GET',
+    headers: { 'x-session-id': sessionId }
+  });
+  return handleResponse(response);
+}
+
+export async function deleteUser(sessionId, userId) {
+  const response = await fetch(`${ADMIN_API_BASE}/users/${userId}`, {
+    method: 'DELETE',
     headers: { 'x-session-id': sessionId }
   });
   return handleResponse(response);
@@ -373,6 +390,14 @@ export async function deleteGalleryItem(sessionId, id) {
 }
 
 // ============= STANDINGS / TOURNAMENT MANAGEMENT =============
+
+export async function fetchAdminStandings(sessionId) {
+  const response = await fetch(`${ADMIN_API_BASE}/standings`, {
+    method: 'GET',
+    headers: { 'x-session-id': sessionId }
+  });
+  return handleResponse(response);
+}
 
 export async function createStandingsEntry(sessionId, standingsData) {
   const response = await fetch(`${ADMIN_API_BASE}/standings`, {

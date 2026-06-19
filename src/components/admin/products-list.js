@@ -1,6 +1,11 @@
 // Admin Products Management Component
 
 export function renderProductsList(products = [], isSuperAdmin = false) {
+  const formatUsd = value => {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue.toFixed(2) : '0.00';
+  };
+
   return `
     <div class="admin-products">
       <div class="section-header" style="margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center;">
@@ -41,7 +46,7 @@ export function renderProductsList(products = [], isSuperAdmin = false) {
                   <td data-label="Category" style="padding: 12px;">${product.category}</td>
                   <td data-label="Price" style="padding: 12px;">
                     <div>MWK ${product.price_mwk?.toLocaleString() || 0}</div>
-                    <div style="font-size: 0.85rem; color: var(--color-accent);">$${product.price_usd?.toFixed(2) || '0.00'}</div>
+                    <div style="font-size: 0.85rem; color: var(--color-accent);">$${formatUsd(product.price_usd)}</div>
                   </td>
                   <td data-label="New" style="padding: 12px;">
                     <span class="badge ${product.is_new ? 'badge-new' : 'badge-inactive'}">

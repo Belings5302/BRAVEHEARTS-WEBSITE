@@ -95,6 +95,12 @@ app.use(express.static(staticRoot));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // API Routes
+app.get('/api/config', (req, res) => {
+  res.json({
+    googleClientId: process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || ''
+  });
+});
+
 app.get('/api/updates', (req, res) => {
   res.json(getLastUpdates());
 });
